@@ -4,7 +4,7 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width,initial-scale=1">
 	<title>音乐</title>
-	<link rel="stylesheet" href="<?php echo $this->pluginHost; ?>static/style.css?v=0.4.2">
+	<link rel="stylesheet" href="<?php echo $this->pluginHost; ?>static/style.css?v=0.4.4">
 </head>
 <body>
 	<div class="app" id="app">
@@ -114,10 +114,6 @@
 						<button id="now-next" class="tb lg" type="button" title="下一首"></button>
 						<button id="now-repeat" class="tb sm" type="button" title="循环：关闭"></button>
 					</div>
-					<div class="now-vol">
-						<button id="now-mute" class="tb sm" type="button" title="静音"></button>
-						<div class="bar vbar" role="slider" aria-label="音量" tabindex="0"><i></i><b></b></div>
-					</div>
 				</div>
 				<div class="now-side">
 					<div id="now-lx" class="now-lx"></div>
@@ -135,7 +131,7 @@
 		<div id="toast" class="toast hidden" role="status"></div>
 		<input id="lyric-file" type="file" accept=".lrc,.lrcx,.txt,.srt,.vtt,.ass,.ssa,.ttml,.xml,.json,.yrc" hidden>
 	</div>
-	<script src="<?php echo $this->pluginHost; ?>static/engine.js?v=0.4.2"></script>
-	<script src="<?php echo $this->pluginHost; ?>static/page.js?v=0.4.2"></script>
+	<script src="<?php echo $this->pluginHost; ?>static/engine.js?v=0.4.4"></script>
+	<script src="<?php echo $this->pluginHost; ?>static/page.js?v=0.4.4"></script>
 </body>
 </html>

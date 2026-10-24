@@ -93,12 +93,12 @@ html.kmusic-fs .km-video-page{z-index:2001}
 .kmini .lx::-webkit-scrollbar{display:none}
 .kmini .lx-inner{padding:28% 0 55%}
 .kmini .lx-static .lx-inner{padding:14px 0 60px}
-.kmini .lx-line{margin:0 0 0 -8px;padding:6px 8px;border-radius:8px;font-size:18px;line-height:1.28;font-weight:700;color:var(--km-faint);cursor:pointer;transform-origin:left center;transition:color .35s,transform .4s cubic-bezier(.2,.7,.2,1);overflow-wrap:anywhere}
+.kmini .lx-line{margin:0;padding:6px 8px;border-radius:8px;font-size:18px;line-height:1.28;font-weight:700;color:var(--km-faint);cursor:pointer;text-align:center;transform-origin:center center;transition:color .35s,transform .4s cubic-bezier(.2,.7,.2,1);overflow-wrap:anywhere}
 .kmini .lx-line:hover{background:var(--km-hover)}
 .kmini .lx-line.on{color:var(--km-fg);transform:scale(1.03)}
 .kmini .lx-w{--p:0%;background:linear-gradient(90deg,var(--km-fg) 0,var(--km-fg) calc(var(--p) - 4%),var(--km-faint) calc(var(--p) + 4%),var(--km-faint) 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
-.kmini .lx-plain{white-space:pre-wrap;margin:0 0 1em;font-size:14px;font-weight:600;color:var(--km-sub);line-height:1.6}
-.kmini .lx-empty{margin:0;padding-top:18%;font-size:15px;font-weight:600;color:var(--km-faint)}
+.kmini .lx-plain{white-space:pre-wrap;margin:0 0 1em;font-size:14px;font-weight:600;color:var(--km-sub);line-height:1.6;text-align:center}
+.kmini .lx-empty{margin:0;padding-top:18%;font-size:15px;font-weight:600;color:var(--km-faint);text-align:center}
 .kmini .q-head{display:flex;align-items:center;justify-content:space-between;margin:10px 8px 4px;font-size:12.5px;font-weight:700}
 .kmini .q-head button{font-size:12px;font-weight:500;color:var(--km-sub);padding:2px 6px;border-radius:5px}
 .kmini .q-head button:hover{color:var(--km-fg);background:var(--km-hover)}

@@ -521,8 +521,8 @@ function boot(){
 	function paintVolume(){
 		var v=S.muted?0:S.volume,name=v<=0.001?'mute':v<.5?'volumeLow':'volume';
 		volBars().forEach(function(el){setBar(el,v)});
-		setIcon('mute',name);setIcon('now-mute',name);setIcon('now-volbtn',name);
-		$('mute').title=$('now-mute').title=S.muted?'取消静音':'静音';
+		setIcon('mute',name);setIcon('now-volbtn',name);
+		$('mute').title=S.muted?'取消静音':'静音';
 	}
 	function paintModes(){
 		var playing=E.playing()||S.loading;
@@ -727,7 +727,7 @@ function boot(){
 	$('next').onclick=$('now-next').onclick=function(){E.next()};
 	$('shuffle').onclick=$('now-shuffle').onclick=function(){E.setShuffle(!S.shuffle)};
 	$('repeat').onclick=$('now-repeat').onclick=function(){E.cycleRepeat()};
-	$('mute').onclick=$('now-mute').onclick=function(){E.toggleMute()};
+	$('mute').onclick=function(){E.toggleMute()};
 	$('fav').onclick=$('now-fav').onclick=function(){toggleFav(E.track())};
 	$('more').onclick=function(){trackMenu(this,E.track(),null)};
 	$('now-more').onclick=function(){trackMenu(this,E.track(),null)};

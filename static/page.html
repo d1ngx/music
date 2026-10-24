@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>音乐</title>
+	<link rel="stylesheet" href="<?php echo $this->pluginHost; ?>static/style.css?v=0.4.2">
+</head>
+<body>
+	<div class="app" id="app">
+		<aside class="nav" id="nav">
+			<label class="search">
+				<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.2" y2="16.2"/></svg>
+				<input id="global-search" type="search" placeholder="搜索" autocomplete="off" spellcheck="false">
+			</label>
+			<nav class="nav-scroll">
+				<button class="nav-item" data-view="home" data-icon="home" type="button">主页</button>
+				<p class="nav-label">资料库</p>
+				<button class="nav-item" data-view="recent" data-icon="clock" type="button">最近添加</button>
+				<button class="nav-item" data-view="artists" data-icon="mic" type="button">艺人</button>
+				<button class="nav-item" data-view="albums" data-icon="album" type="button">专辑</button>
+				<button class="nav-item" data-view="tracks" data-icon="note" type="button">歌曲</button>
+				<button class="nav-item" data-view="favorites" data-icon="heart" type="button">喜爱的歌曲</button>
+				<p class="nav-label">播放列表 <button id="list-add" class="nav-add" type="button" title="新建播放列表"></button></p>
+				<button class="nav-item" data-nav-list="all" data-icon="note" type="button">全部歌曲</button>
+				<button class="nav-item" data-view="lists" data-icon="grid" type="button">所有播放列表</button>
+				<div id="nav-lists"></div>
+			</nav>
+			<div class="nav-foot">
+				<button id="scan" class="scan" type="button"></button>
+				<p class="note" id="scan-note">只索引当前账号可读取的文件</p>
+			</div>
+		</aside>
+		<div class="nav-mask" id="nav-mask"></div>
+		<section class="main">
+			<header class="top">
+				<button id="nav-toggle" class="ghost" type="button" title="侧栏"></button>
+				<button id="back" class="ghost hidden" type="button" title="返回"></button>
+				<h1 id="heading">主页</h1>
+				<label class="filter"><input id="page-search" type="search" placeholder="在此页中查找" autocomplete="off" spellcheck="false"></label>
+			</header>
+			<div id="library" class="library" tabindex="-1"><div class="empty">正在加载…</div></div>
+		</section>
+		<aside class="drawer hidden" id="drawer">
+			<div class="drawer-bg" id="drawer-bg"></div>
+			<header class="drawer-bar">
+				<div class="seg"><button id="d-lyrics" type="button">歌词</button><button id="d-queue" type="button">待播</button></div>
+				<button id="d-close" class="ghost" type="button" title="收起"></button>
+			</header>
+			<div class="drawer-body">
+				<div id="d-lx" class="d-lx"></div>
+				<div id="d-q" class="queue hidden"></div>
+				<button id="d-follow" class="follow hidden" type="button">回到当前歌词</button>
+			</div>
+		</aside>
+		<footer class="dock" id="dock">
+			<button id="dock-open" class="dock-song" type="button" title="打开播放页">
+				<span class="dock-art"><img id="cover" alt=""></span>
+				<span class="dock-text"><strong id="title">未在播放</strong><small id="meta"></small></span>
+			</button>
+			<div class="dock-mid">
+				<div class="transport">
+					<button id="shuffle" class="tb sm" type="button" title="随机播放"></button>
+					<button id="prev" class="tb" type="button" title="上一首"></button>
+					<button id="toggle" class="tb big" type="button" title="播放"></button>
+					<button id="next" class="tb" type="button" title="下一首"></button>
+					<button id="repeat" class="tb sm" type="button" title="循环：关闭"></button>
+				</div>
+				<div class="seekline">
+					<span id="cur" class="t">0:00</span>
+					<div class="bar" id="seek" role="slider" aria-label="播放进度" tabindex="0"><i></i><b></b></div>
+					<span id="left" class="t">--:--</span>
+				</div>
+			</div>
+			<div class="dock-end">
+				<button id="fav" class="tb sm" type="button" title="喜爱"></button>
+				<button id="dock-lyrics" class="tb sm" type="button" title="歌词"></button>
+				<button id="dock-queue" class="tb sm" type="button" title="待播列表"></button>
+				<div class="vol" id="dock-vol">
+					<button id="mute" class="tb sm" type="button" title="静音"></button>
+					<div class="bar vbar" role="slider" aria-label="音量" tabindex="0"><i></i><b></b></div>
+				</div>
+				<button id="more" class="tb sm" type="button" title="更多"></button>
+			</div>
+		</footer>
+		<section id="now" class="now hidden" aria-label="正在播放">
+			<div class="now-bg" id="now-bg"><canvas id="now-canvas" width="64" height="40"></canvas></div>
+			<header class="now-bar">
+				<button id="now-close" class="glass" type="button" title="收起"></button>
+				<span class="spacer"></span>
+				<button id="now-fit" class="glass hidden" type="button" title="画面填充"></button>
+				<div class="now-volwrap">
+					<button id="now-volbtn" class="glass" type="button" title="音量"></button>
+					<div class="now-volpop hidden" id="now-volpop"><div class="bar vbar" role="slider" aria-label="音量" tabindex="0"><i></i><b></b></div></div>
+				</div>
+				<button id="now-fs" class="glass" type="button" title="全屏"></button>
+			</header>
+			<div class="now-body">
+				<div class="now-art">
+					<div class="art-box" id="art-box"><img id="now-cover" alt=""><div id="now-video" class="video-slot hidden"></div></div>
+					<div class="now-info">
+						<div class="now-copy"><strong id="now-title">未在播放</strong><small id="now-meta"></small></div>
+						<button id="now-fav" class="glass sm" type="button" title="喜爱"></button>
+						<button id="now-more" class="glass sm" type="button" title="更多"></button>
+					</div>
+					<div class="seekline">
+						<div class="bar" id="now-seek" role="slider" aria-label="播放进度" tabindex="0"><i></i><b></b></div>
+						<div class="times"><span id="now-cur">0:00</span><span id="now-left">--:--</span></div>
+					</div>
+					<div class="transport">
+						<button id="now-shuffle" class="tb sm" type="button" title="随机播放"></button>
+						<button id="now-prev" class="tb lg" type="button" title="上一首"></button>
+						<button id="now-toggle" class="tb xl" type="button" title="播放"></button>
+						<button id="now-next" class="tb lg" type="button" title="下一首"></button>
+						<button id="now-repeat" class="tb sm" type="button" title="循环：关闭"></button>
+					</div>
+					<div class="now-vol">
+						<button id="now-mute" class="tb sm" type="button" title="静音"></button>
+						<div class="bar vbar" role="slider" aria-label="音量" tabindex="0"><i></i><b></b></div>
+					</div>
+				</div>
+				<div class="now-side">
+					<div id="now-lx" class="now-lx"></div>
+					<div id="now-q" class="queue hidden"></div>
+					<button id="now-follow" class="follow hidden" type="button">回到当前歌词</button>
+				</div>
+			</div>
+			<div class="now-tabs">
+				<button id="tab-lyrics" class="glass sm" type="button" title="歌词"></button>
+				<button id="tab-queue" class="glass sm" type="button" title="待播列表"></button>
+			</div>
+		</section>
+		<div id="menu" class="menu hidden" role="menu"></div>
+		<div id="modal" class="modal hidden"><form class="modal-box" id="modal-box"></form></div>
+		<div id="toast" class="toast hidden" role="status"></div>
+		<input id="lyric-file" type="file" accept=".lrc,.lrcx,.txt,.srt,.vtt,.ass,.ssa,.ttml,.xml,.json,.yrc" hidden>
+	</div>
+	<script src="<?php echo $this->pluginHost; ?>static/engine.js?v=0.4.2"></script>
+	<script src="<?php echo $this->pluginHost; ?>static/page.js?v=0.4.2"></script>
+</body>
+</html>

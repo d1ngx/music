@@ -1,0 +1,19 @@
+{
+	"id":"music",
+	"name":"{{LNG['music.meta.name']}}",
+	"title":"{{LNG['music.meta.title']}}",
+	"version": "0.4.2",
+	"category":"media,file",
+	"source":{"icon":"{{pluginHost}}static/icon.svg","thumb":"{{pluginHost}}static/icon.svg"},
+	"description":"{{LNG['music.meta.desc']}}",
+	"auther":{"copyright":"","homePage":"https://github.com/d1ngx/music"},
+	"configItem":{
+		"pluginAuth":{"type":"userSelect","value":{"all":1},"display":"{{LNG['admin.plugin.auth']}}","desc":"{{LNG['admin.plugin.authDesc']}}","require":1},
+		"menuAdd":{"type":"switch","value":1,"display":"{{LNG['admin.plugin.menuAdd']}}","desc":"{{LNG['admin.plugin.menuAddDesc']}}","switchItem":{"0":"","1":"menuSubMenu"}},
+		"menuSubMenu":{"type":"switch","value":0,"display":"{{LNG['admin.setting.subMenu']}}","desc":"{{LNG['admin.plugin.menuSubMenuDesc']}}"},
+		"scanVideo":{"type":"switch","value":0,"display":"{{LNG['music.config.scanVideo']}}","desc":"{{LNG['music.config.scanVideoDesc']}}"},
+		"onlineLyrics":{"type":"switch","value":0,"display":"{{LNG['music.config.onlineLyrics']}}","desc":"{{LNG['music.config.onlineLyricsDesc']}}"},
+		"scanBatch":{"type":"number","value":"80","display":"{{LNG['music.config.scanBatch']}}","desc":"{{LNG['music.config.scanBatchDesc']}}"},
+		"fileExt":{"type":"tags","value":"mp3,flac,m4a,aac,ogg,oga,opus,wav,wma","display":"{{LNG['admin.plugin.fileExt']}}","desc":"{{LNG['admin.plugin.fileExtDesc']}}"}
+	}
+}

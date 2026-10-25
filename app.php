@@ -148,11 +148,13 @@ class musicPlugin extends PluginBase {
 			$cached = json_decode(@file_get_contents($cache), true);
 			if (!is_array($cached) || ($cached['text'] === '' && empty($cached['synced']))) $cached = null;
 		}
+		// A saved lyric that ends in the first part of the song is a clip, so look again.
+		$keep = function($data) use ($track) {return $this->lyricCovers($data, $this->trackDuration($track));};
 		$data = null;
-		if ($saved && $this->hasWordTimes($saved)) $data = $saved;
-		elseif ($cached && $this->hasWordTimes($cached)) $data = $cached;
-		elseif ($saved) $data = $saved;
-		elseif ($cached) $data = $cached;
+		if ($saved && $this->hasWordTimes($saved) && $keep($saved)) $data = $saved;
+		elseif ($cached && $this->hasWordTimes($cached) && $keep($cached)) $data = $cached;
+		elseif ($saved && $keep($saved)) $data = $saved;
+		elseif ($cached && $keep($cached)) $data = $cached;
 		if (!$data) {
 			$data = $this->findLyrics($source, $track);
 			if (($data['text'] !== '' || $data['synced'])) {
@@ -450,19 +452,27 @@ class musicPlugin extends PluginBase {
 		return array_values(array_intersect(array('amll', 'kugou', 'lrclib'), $list));
 	}
 
-	// Word-timed results win; otherwise the first line-synced result from the enabled sources.
+	// Word-timed results win, but only when they cover the song. A short clip must not
+	// replace a full line-timed lyric.
 	private function onlineLyrics($track, $source, $wordsOnly = false) {
+		$duration = $this->trackDuration($track);
 		$best = null;
+		$clip = null;
 		foreach ($this->lyricSources() as $name) {
 			if ($wordsOnly && $name === 'lrclib') continue;
 			if ($name === 'amll') $data = $this->amllLyrics($track, $source);
 			elseif ($name === 'kugou') $data = $this->kugouLyrics($track, $source);
 			else $data = $this->lrclibLyrics($track, $source);
 			if (!$data) continue;
+			if (!$this->lyricCovers($data, $duration)) {
+				if (!$clip || $this->lyricSpan($data) > $this->lyricSpan($clip)) $clip = $data;
+				continue;
+			}
 			if ($this->hasWordTimes($data)) return $data;
 			if (!$best || (!$best['synced'] && $data['synced'])) $best = $data;
 		}
-		return $wordsOnly ? null : $best;
+		if ($best) return $best;
+		return $wordsOnly ? ($clip && $this->hasWordTimes($clip) ? $clip : null) : $clip;
 	}
 
 	public function lyricSearch() {
@@ -488,6 +498,24 @@ class musicPlugin extends PluginBase {
 
 	private function trackDuration($track) {
 		return max(0, intval($track ? _get($track, 'duration', 0) : 0));
+	}
+
+	private function lyricSpan($data) {
+		$last = 0;
+		foreach ((array)_get($data, 'synced', array()) as $row) {
+			$last = max($last, floatval(_get($row, 't', 0)));
+			foreach ((array)_get($row, 'words', array()) as $word) $last = max($last, floatval(_get($word, 'e', _get($word, 't', 0))));
+		}
+		return $last;
+	}
+
+	// Lyrics that finish in the first 45% of the song, and more than 20 seconds before it ends, are a clip.
+	private function lyricCovers($data, $duration) {
+		$duration = intval($duration);
+		if ($duration < 30) return true;
+		$last = $this->lyricSpan($data);
+		if ($last <= 0) return true;
+		return $last >= $duration * 0.45 || $duration - $last <= 20;
 	}
 
 	private function sameTitle($a, $b) {
@@ -588,23 +616,33 @@ class musicPlugin extends PluginBase {
 	private function kugouLyrics($track, $source) {
 		$duration = $this->trackDuration($track);
 		$tried = 0;
+		$best = null;
 		foreach ($this->lyricQueries($track, $source) as $pair) {
 			if ($tried >= 2) break;
 			$tried++;
 			$params = array('ver' => 1, 'man' => 'yes', 'client' => 'pc', 'keyword' => $pair[0] !== '' ? $pair[0].' - '.$pair[1] : $pair[1], 'duration' => $duration * 1000, 'hash' => '');
-			$list = _get(json_decode((string)$this->httpGet('https://lyrics.kugou.com/search?'.http_build_query($params)), true), 'candidates', array());
-			foreach (array_slice((array)$list, 0, 4) as $row) {
+			$list = (array)_get(json_decode((string)$this->httpGet('https://lyrics.kugou.com/search?'.http_build_query($params)), true), 'candidates', array());
+			// Without a duration, Kugou ranks short clips first. Prefer the longest matching candidate.
+			if (!$duration) usort($list, function($a, $b) {return intval(_get($b, 'duration', 0)) - intval(_get($a, 'duration', 0));});
+			$seen = 0;
+			foreach ($list as $row) {
+				if ($seen >= 6) break;
 				$id = _get($row, 'id', ''); $key = _get($row, 'accesskey', '');
 				if ($id === '' || $key === '') continue;
-				if (!$this->candidateMatches($pair, $duration, _get($row, 'song', ''), preg_split('/[、,&]/u', (string)_get($row, 'singer', '')), intval(_get($row, 'duration', 0)) / 1000)) continue;
+				$seconds = intval(_get($row, 'duration', 0)) / 1000;
+				if (!$this->candidateMatches($pair, $duration, _get($row, 'song', ''), preg_split('/[、,&]/u', (string)_get($row, 'singer', '')), $seconds)) continue;
+				$seen++;
 				$res = json_decode((string)$this->httpGet('https://lyrics.kugou.com/download?'.http_build_query(array('ver' => 1, 'client' => 'pc', 'id' => $id, 'accesskey' => $key, 'fmt' => 'krc', 'charset' => 'utf8'))), true);
 				$text = $this->decodeKrc((string)base64_decode((string)_get($res, 'content', '')));
 				if ($text === '') continue;
 				$parsed = $this->parseKrc($text);
-				if ($parsed['synced']) { $parsed['source'] = 'kugou'; return $parsed; }
+				if (!$parsed['synced']) continue;
+				$parsed['source'] = 'kugou';
+				if ($this->lyricCovers($parsed, $duration)) return $parsed;
+				if (!$best || $this->lyricSpan($parsed) > $this->lyricSpan($best)) $best = $parsed;
 			}
 		}
-		return null;
+		return $best;
 	}
 
 	private function sidecarLyrics($source, $track = null) {

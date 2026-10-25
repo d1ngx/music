@@ -397,8 +397,14 @@ function boot(){
 			{label:'歌词延后 0.5 秒',icon:'right',act:function(){showOffset(E.nudgeOffset(-500))}},
 			{label:'重置偏移',icon:'refresh',act:function(){showOffset(E.nudgeOffset(0,true))},disabled:o?'':'当前没有偏移'},
 			{sep:1},
+			{label:'在线查找逐字歌词',icon:'search',act:searchLyrics,disabled:S.lyrics.wordSources?(hasWords()?'已经是逐字歌词':''):'插件设置里没有开启逐字歌词来源'},
 			{label:'导入歌词文件…',icon:'upload',act:function(){$('lyric-file').click()}}
 		];
+	}
+	function hasWords(){return (S.lyrics.synced||[]).some(function(l){return l.words&&l.words.length})}
+	function searchLyrics(){
+		toast('正在查找逐字歌词…');
+		E.searchLyrics().then(function(d){toast('已换成逐字歌词（'+({amll:'AMLL TTML DB',kugou:'酷狗'}[d.source]||d.source)+'）')}).catch(function(e){toast(e.message)});
 	}
 	function showOffset(o){if(typeof o==='number')toast('歌词偏移 '+(o>0?'+':'')+o.toFixed(1)+' 秒')}
 	function copy(text){

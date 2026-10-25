@@ -2,7 +2,7 @@
 	"id":"music",
 	"name":"{{LNG['music.meta.name']}}",
 	"title":"{{LNG['music.meta.title']}}",
-	"version": "0.4.4",
+	"version": "0.5.0",
 	"category":"media,file",
 	"source":{"icon":"{{pluginHost}}static/icon.svg","thumb":"{{pluginHost}}static/icon.svg"},
 	"description":"{{LNG['music.meta.desc']}}",
@@ -12,7 +12,8 @@
 		"menuAdd":{"type":"switch","value":1,"display":"{{LNG['admin.plugin.menuAdd']}}","desc":"{{LNG['admin.plugin.menuAddDesc']}}","switchItem":{"0":"","1":"menuSubMenu"}},
 		"menuSubMenu":{"type":"switch","value":0,"display":"{{LNG['admin.setting.subMenu']}}","desc":"{{LNG['admin.plugin.menuSubMenuDesc']}}"},
 		"scanVideo":{"type":"switch","value":0,"display":"{{LNG['music.config.scanVideo']}}","desc":"{{LNG['music.config.scanVideoDesc']}}"},
-		"onlineLyrics":{"type":"switch","value":0,"display":"{{LNG['music.config.onlineLyrics']}}","desc":"{{LNG['music.config.onlineLyricsDesc']}}"},
+		"onlineLyrics":{"type":"switch","value":0,"display":"{{LNG['music.config.onlineLyrics']}}","desc":"{{LNG['music.config.onlineLyricsDesc']}}","switchItem":{"0":"","1":"lyricSources"}},
+		"lyricSources":{"type":"checkbox","value":"amll,kugou,lrclib","display":"{{LNG['music.config.lyricSources']}}","desc":"{{LNG['music.config.lyricSourcesDesc']}}","info":{"amll":"{{LNG['music.config.sourceAmll']}}","kugou":"{{LNG['music.config.sourceKugou']}}","lrclib":"{{LNG['music.config.sourceLrclib']}}"}},
 		"scanBatch":{"type":"number","value":"80","display":"{{LNG['music.config.scanBatch']}}","desc":"{{LNG['music.config.scanBatchDesc']}}"},
 		"fileExt":{"type":"tags","value":"mp3,flac,m4a,aac,ogg,oga,opus,wav,wma","display":"{{LNG['admin.plugin.fileExt']}}","desc":"{{LNG['admin.plugin.fileExtDesc']}}"}
 	}

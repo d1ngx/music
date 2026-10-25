@@ -24,6 +24,9 @@ class musicPlugin extends PluginBase {
 		$config['scanBatch'] = max(1, min(200, intval(_get($config, 'scanBatch', 80))));
 		$config['scanVideo'] = _get($config, 'scanVideo', 0) == 1 ? 1 : 0;
 		$config['onlineLyrics'] = _get($config, 'onlineLyrics', 0) == 1 ? 1 : 0;
+		$sources = _get($config, 'lyricSources', 'amll,kugou,lrclib');
+		$sources = array_map('trim', is_array($sources) ? $sources : explode(',', (string)$sources));
+		$config['lyricSources'] = implode(',', array_values(array_intersect(array('amll', 'kugou', 'lrclib'), $sources)));
 		return $config;
 	}
 
@@ -162,6 +165,7 @@ class musicPlugin extends PluginBase {
 		}
 		if (!$offset && !empty($data['offset'])) $offset = intval($data['offset']);
 		$data['lyricOffset'] = $offset;
+		$data['wordSources'] = $this->wordSourcesOn();
 		return show_json($data);
 	}
 
@@ -189,6 +193,7 @@ class musicPlugin extends PluginBase {
 		$this->archiveLyrics($sourceID, $data);
 		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
 		$data['lyricOffset'] = intval($track ? _get($track, 'lyricOffset', 0) : 0);
+		$data['wordSources'] = $this->wordSourcesOn();
 		return show_json($data);
 	}
 
@@ -432,11 +437,174 @@ class musicPlugin extends PluginBase {
 			$embedded = $this->embeddedLyrics($source);
 			if ($embedded) return $this->parseLyrics($embedded, 'tag');
 		}
-		if (_get($this->getConfig(), 'onlineLyrics', 0) == 1) {
-			$remote = $this->lrclibLyrics($track, $source);
-			if ($remote) return $remote;
+		$remote = $this->onlineLyrics($track, $source);
+		return $remote ? $remote : $empty;
+	}
+
+	private function lyricSources() {
+		$config = $this->getConfig();
+		if (_get($config, 'onlineLyrics', 0) != 1) return array();
+		$raw = _get($config, 'lyricSources', null);
+		if ($raw === null) $raw = 'amll,kugou,lrclib';
+		$list = array_map('trim', is_array($raw) ? $raw : explode(',', (string)$raw));
+		return array_values(array_intersect(array('amll', 'kugou', 'lrclib'), $list));
+	}
+
+	// Word-timed results win; otherwise the first line-synced result from the enabled sources.
+	private function onlineLyrics($track, $source, $wordsOnly = false) {
+		$best = null;
+		foreach ($this->lyricSources() as $name) {
+			if ($wordsOnly && $name === 'lrclib') continue;
+			if ($name === 'amll') $data = $this->amllLyrics($track, $source);
+			elseif ($name === 'kugou') $data = $this->kugouLyrics($track, $source);
+			else $data = $this->lrclibLyrics($track, $source);
+			if (!$data) continue;
+			if ($this->hasWordTimes($data)) return $data;
+			if (!$best || (!$best['synced'] && $data['synced'])) $best = $data;
 		}
-		return $empty;
+		return $wordsOnly ? null : $best;
+	}
+
+	public function lyricSearch() {
+		if (!$this->postAllowed()) return show_json(LNG('common.illegalRequest'), false);
+		$sourceID = intval(_get($this->in, 'sourceid', 0));
+		$source = $this->assertTrack($sourceID);
+		if (!$this->wordSourcesOn()) return show_json('插件设置里没有开启逐字歌词来源', false);
+		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
+		$data = $this->onlineLyrics($track, $source, true);
+		if (!$data) return show_json('没有找到这首歌的逐字歌词', false);
+		$dir = $this->lyricsDir();
+		if (!is_dir($dir)) @mkdir($dir, 0755, true);
+		@file_put_contents($this->lyricsFile($sourceID), json_encode($data, JSON_UNESCAPED_UNICODE));
+		$data['lyricOffset'] = intval($track ? _get($track, 'lyricOffset', 0) : 0);
+		$this->archiveLyrics($sourceID, $data);
+		$data['wordSources'] = 1;
+		return show_json($data);
+	}
+
+	private function wordSourcesOn() {
+		return array_diff($this->lyricSources(), array('lrclib')) ? 1 : 0;
+	}
+
+	private function trackDuration($track) {
+		return max(0, intval($track ? _get($track, 'duration', 0) : 0));
+	}
+
+	private function sameTitle($a, $b) {
+		$clean = function($s) {
+			$s = strtolower(trim((string)$s));
+			$s = preg_replace('/\s*[\(（\[【].*$/u', '', $s);
+			return preg_replace('/[\s\p{P}]+/u', '', $s);
+		};
+		$a = $clean($a); $b = $clean($b);
+		return $a !== '' && $a === $b;
+	}
+
+	private function sameArtist($want, $names) {
+		$want = strtolower(preg_replace('/[\s\p{P}]+/u', '', (string)$want));
+		if ($want === '') return true;
+		foreach ((array)$names as $name) {
+			$name = strtolower(preg_replace('/[\s\p{P}]+/u', '', (string)$name));
+			if ($name !== '' && (strpos($want, $name) !== false || strpos($name, $want) !== false)) return true;
+		}
+		return false;
+	}
+
+	// Title must match without being another version; artist must match when known; durations within 4 s when both known.
+	private function candidateMatches($pair, $duration, $title, $artists, $seconds) {
+		if (!$this->sameTitle($pair[1], $title) || $this->otherVersion($pair[1], $title)) return false;
+		if ($duration && $seconds && abs($duration - $seconds) > 4) return false;
+		if ($pair[0] !== '') return $this->sameArtist($pair[0], $artists);
+		return $duration && $seconds;
+	}
+
+	private function otherVersion($want, $title) {
+		$re = '/\b(dj|remix|live|instrumental|karaoke|cover|demo|acoustic|inst)\b|伴奏|翻唱|翻自|原唱|现场|纯音乐|钢琴版|吉他版|女声版|男声版|深情版|dj版/iu';
+		return preg_match($re, (string)$title) && !preg_match($re, (string)$want);
+	}
+
+	private function amllLyrics($track, $source) {
+		$index = $this->amllIndex();
+		if (!$index) return null;
+		$duration = $this->trackDuration($track);
+		$tried = 0;
+		foreach ($this->lyricQueries($track, $source) as $pair) {
+			if ($tried >= 3) break;
+			$tried++;
+			$fetched = 0;
+			// Later index rows are newer revisions of the same song.
+			for ($i = count($index) - 1; $i >= 0 && $fetched < 2; $i--) {
+				list($titles, $artists, $file) = $index[$i];
+				$hit = false;
+				foreach ($titles as $title) {
+					if ($this->sameTitle($pair[1], $title) && !$this->otherVersion($pair[1], $title)) { $hit = true; break; }
+				}
+				if (!$hit || ($pair[0] !== '' ? !$this->sameArtist($pair[0], $artists) : !$duration)) continue;
+				$fetched++;
+				$ttml = $this->httpGet('https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/raw-lyrics/'.rawurlencode($file));
+				if ($ttml === '') continue;
+				if ($duration && preg_match('/<body[^>]*\sdur="([^"]+)"/', $ttml, $m)) {
+					$length = $this->clockToSeconds($m[1]);
+					if ($length && abs($length - $duration) > 6) continue;
+				} elseif ($pair[0] === '') continue;
+				$parsed = $this->parseTtml($ttml);
+				if ($parsed['synced']) { $parsed['source'] = 'amll'; return $parsed; }
+			}
+		}
+		return null;
+	}
+
+	// Compact copy of metadata/raw-lyrics-index.jsonl: [[titles], [artists], rawLyricFile], refreshed daily.
+	private function amllIndex() {
+		$file = $this->lyricsDir().'/amll-index.json';
+		$fresh = is_file($file) && filemtime($file) > time() - 86400;
+		if (!$fresh) {
+			$raw = $this->httpGet('https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/metadata/raw-lyrics-index.jsonl', array(), 25);
+			$list = array();
+			foreach (explode("\n", $raw) as $line) {
+				$row = json_decode($line, true);
+				$name = (string)_get($row, 'rawLyricFile', '');
+				if ($name === '' || !preg_match('/^[\w.-]+\.ttml$/', $name)) continue;
+				$meta = array();
+				foreach ((array)_get($row, 'metadata', array()) as $pair) {
+					if (is_array($pair) && count($pair) === 2) $meta[$pair[0]] = (array)$pair[1];
+				}
+				if (empty($meta['musicName'])) continue;
+				$list[] = array(array_values($meta['musicName']), array_values(_get($meta, 'artists', array())), $name);
+			}
+			if (!is_dir($this->lyricsDir())) @mkdir($this->lyricsDir(), 0755, true);
+			if ($list) {
+				@file_put_contents($file, json_encode($list, JSON_UNESCAPED_UNICODE));
+				return $list;
+			}
+			// Download failed: keep any old copy and wait an hour before trying again.
+			if (!is_file($file)) @file_put_contents($file, '[]');
+			@touch($file, time() - 86400 + 3600);
+		}
+		$list = is_file($file) ? json_decode((string)@file_get_contents($file), true) : null;
+		return is_array($list) ? $list : array();
+	}
+
+	private function kugouLyrics($track, $source) {
+		$duration = $this->trackDuration($track);
+		$tried = 0;
+		foreach ($this->lyricQueries($track, $source) as $pair) {
+			if ($tried >= 2) break;
+			$tried++;
+			$params = array('ver' => 1, 'man' => 'yes', 'client' => 'pc', 'keyword' => $pair[0] !== '' ? $pair[0].' - '.$pair[1] : $pair[1], 'duration' => $duration * 1000, 'hash' => '');
+			$list = _get(json_decode((string)$this->httpGet('https://lyrics.kugou.com/search?'.http_build_query($params)), true), 'candidates', array());
+			foreach (array_slice((array)$list, 0, 4) as $row) {
+				$id = _get($row, 'id', ''); $key = _get($row, 'accesskey', '');
+				if ($id === '' || $key === '') continue;
+				if (!$this->candidateMatches($pair, $duration, _get($row, 'song', ''), preg_split('/[、,&]/u', (string)_get($row, 'singer', '')), intval(_get($row, 'duration', 0)) / 1000)) continue;
+				$res = json_decode((string)$this->httpGet('https://lyrics.kugou.com/download?'.http_build_query(array('ver' => 1, 'client' => 'pc', 'id' => $id, 'accesskey' => $key, 'fmt' => 'krc', 'charset' => 'utf8'))), true);
+				$text = $this->decodeKrc((string)base64_decode((string)_get($res, 'content', '')));
+				if ($text === '') continue;
+				$parsed = $this->parseKrc($text);
+				if ($parsed['synced']) { $parsed['source'] = 'kugou'; return $parsed; }
+			}
+		}
+		return null;
 	}
 
 	private function sidecarLyrics($source, $track = null) {
@@ -481,7 +649,7 @@ class musicPlugin extends PluginBase {
 			$params = $pair[0] !== ''
 				? array('track_name' => $pair[1], 'artist_name' => $pair[0])
 				: array('q' => $pair[1]);
-			$hit = $this->pickLyricsRecord($this->httpGet('https://lrclib.net/api/search?'.http_build_query($params)));
+			$hit = $this->pickLyricsRecord($this->httpGet('https://lrclib.net/api/search?'.http_build_query($params), array('Lrclib-Client: music-player/0.5.0')));
 			if ($hit) return $hit;
 		}
 		return null;
@@ -671,6 +839,10 @@ class musicPlugin extends PluginBase {
 			$parsed = $this->parseAss($text);
 			if ($parsed['synced']) return $parsed;
 		}
+		if (preg_match('/^\[\d+,\d+\]</m', $text)) {
+			$parsed = $this->parseKrc($text);
+			if ($parsed['synced']) return $parsed;
+		}
 		if (preg_match('/\[\d+,\d+\]/', $text) && preg_match('/\(\d+,\d+,/', $text)) {
 			$parsed = $this->parseYrc($text);
 			if ($parsed['synced']) return $parsed;
@@ -698,7 +870,7 @@ class musicPlugin extends PluginBase {
 				$words = array();
 				foreach ((array)_get($row, 'words', array()) as $word) {
 					if (!is_array($word) || _get($word, 'w', '') === '') continue;
-					$words[] = array('t' => floatval(_get($word, 't', 0)), 'w' => (string)$word['w']);
+					$words[] = $this->word(floatval(_get($word, 't', 0)), (string)$word['w'], isset($word['e']) ? floatval($word['e']) : 0);
 				}
 				$synced[] = array('t' => floatval(_get($row, 't', 0)), 'line' => (string)_get($row, 'line', ''), 'words' => $words);
 			}
@@ -717,7 +889,10 @@ class musicPlugin extends PluginBase {
 				$w = (string)_get($word, 'text', _get($word, 'word', _get($word, 'w', _get($word, 'chars', ''))));
 				if ($w === '') continue;
 				$wt = isset($word['startTimeMs']) ? floatval($word['startTimeMs']) / 1000 : floatval(_get($word, 't', $t));
-				$words[] = array('t' => $wt, 'w' => $w);
+				if (isset($word['endTimeMs'])) $we = floatval($word['endTimeMs']) / 1000;
+				elseif (isset($word['durationMs'])) $we = $wt + floatval($word['durationMs']) / 1000;
+				else $we = floatval(_get($word, 'e', 0));
+				$words[] = $this->word($wt, $w, $we);
 			}
 			$plain = $words ? implode('', array_map(function($word) {return $word['w'];}, $words)) : (string)_get($line, 'words', _get($line, 'text', _get($line, 'line', '')));
 			if (is_array($plain)) $plain = '';
@@ -741,18 +916,36 @@ class musicPlugin extends PluginBase {
 		if (!$nodes) return $this->emptyLyrics();
 		foreach ($nodes as $node) {
 			$t = $this->clockToSeconds($node->getAttribute('begin'));
-			$spans = $xp->query('.//*[local-name()="span"]', $node);
 			$words = array();
 			$line = '';
-			if ($spans && $spans->length) {
-				foreach ($spans as $span) {
-					$w = $span->textContent;
-					if ($w === '') continue;
-					$begin = $span->getAttribute('begin');
-					$words[] = array('t' => $begin !== '' ? $this->clockToSeconds($begin) : $t, 'w' => $w);
-					$line .= $w;
+			$timed = false;
+			foreach ($node->childNodes as $child) {
+				if ($child->nodeType === XML_TEXT_NODE || $child->nodeType === XML_CDATA_SECTION_NODE) {
+					// Spaces between spans separate words; whitespace with a newline is just XML indentation.
+					$gap = $child->textContent;
+					if ($gap === '' || (trim($gap) === '' && strpos($gap, "\n") !== false)) continue;
+					$gap = preg_replace('/\s+/', ' ', $gap);
+					if ($words) $words[count($words) - 1]['w'] .= $gap;
+					$line .= $gap;
+					continue;
 				}
-			} else $line = $node->textContent;
+				if ($child->nodeType !== XML_ELEMENT_NODE) continue;
+				// Translation, romanisation and background-vocal spans are not part of the sung line.
+				$role = $child->getAttributeNS('http://www.w3.org/ns/ttml#metadata', 'role');
+				if ($role === '') $role = $child->getAttribute('ttm:role');
+				if ($role !== '') continue;
+				$w = preg_replace('/\s+/', ' ', $child->textContent);
+				if ($w === '') continue;
+				$begin = $child->getAttribute('begin');
+				if ($begin !== '') $timed = true;
+				$wt = $begin !== '' ? $this->clockToSeconds($begin) : $t;
+				$end = $child->getAttribute('end');
+				$dur = $child->getAttribute('dur');
+				$we = $end !== '' ? $this->clockToSeconds($end) : ($dur !== '' ? $wt + $this->clockToSeconds($dur) : 0);
+				$words[] = $this->word($wt, $w, $we);
+				$line .= $w;
+			}
+			if (!$timed) $words = array();
 			$line = trim(preg_replace('/\s+/', ' ', $line));
 			if ($line === '') continue;
 			$synced[] = array('t' => $t, 'line' => $line, 'words' => $words);
@@ -790,10 +983,11 @@ class musicPlugin extends PluginBase {
 				for ($i = 1; $i + 1 < count($bits); $i += 2) {
 					$chunk = preg_replace('/\{[^}]*\}/', '', $bits[$i + 1]);
 					$chunk = str_replace(array('\N', '\n'), ' ', $chunk);
-					if ($chunk === '') { $cursor += intval($bits[$i]) / 100; continue; }
-					$words[] = array('t' => $cursor, 'w' => $chunk);
+					$length = intval($bits[$i]) / 100;
+					if ($chunk === '') { $cursor += $length; continue; }
+					$words[] = $this->word($cursor, $chunk, $cursor + $length);
 					$plain .= $chunk;
-					$cursor += intval($bits[$i]) / 100;
+					$cursor += $length;
 				}
 			} else $plain = preg_replace('/\{[^}]*\}/', '', $body);
 			$plain = trim(str_replace(array('\N', '\n', '\h'), array(' ', ' ', ' '), $plain));
@@ -814,7 +1008,7 @@ class musicPlugin extends PluginBase {
 			if (preg_match_all('/\((\d+),(\d+),\d+\)([^(]*)/', $m[3], $parts, PREG_SET_ORDER)) {
 				foreach ($parts as $part) {
 					if ($part[3] === '') continue;
-					$words[] = array('t' => intval($part[1]) / 1000, 'w' => $part[3]);
+					$words[] = $this->word(intval($part[1]) / 1000, $part[3], (intval($part[1]) + intval($part[2])) / 1000);
 					$plain .= $part[3];
 				}
 			} else $plain = preg_replace('/\(\d+,\d+,\d+\)/', '', $m[3]);
@@ -823,6 +1017,40 @@ class musicPlugin extends PluginBase {
 			$synced[] = array('t' => $start, 'line' => $plain, 'words' => $words);
 		}
 		return $this->packLyrics($synced, 'yrc');
+	}
+
+	// KRC: [lineStart,lineDur]<offset,dur,0>word, word offsets relative to the line start.
+	private function parseKrc($text) {
+		$synced = array();
+		foreach (preg_split("/\r\n|\n|\r/", $text) as $line) {
+			$line = trim($line);
+			if (!preg_match('/^\[(\d+),(\d+)\](.*)$/', $line, $m)) continue;
+			$start = intval($m[1]) / 1000;
+			$words = array();
+			$plain = '';
+			if (preg_match_all('/<(\d+),(\d+),\d+>([^<]*)/', $m[3], $parts, PREG_SET_ORDER)) {
+				foreach ($parts as $part) {
+					if ($part[3] === '') continue;
+					$t = $start + intval($part[1]) / 1000;
+					$words[] = $this->word($t, $part[3], $t + intval($part[2]) / 1000);
+					$plain .= $part[3];
+				}
+			} else $plain = $m[3];
+			$plain = trim($plain);
+			if ($plain === '') continue;
+			$synced[] = array('t' => $start, 'line' => $plain, 'words' => $words);
+		}
+		return $this->packLyrics($synced, 'krc');
+	}
+
+	private function decodeKrc($bin) {
+		if (strncmp($bin, 'krc1', 4) !== 0 || !function_exists('gzuncompress')) return '';
+		$key = array(64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105);
+		$data = substr($bin, 4);
+		for ($i = 0, $n = strlen($data); $i < $n; $i++) $data[$i] = chr(ord($data[$i]) ^ $key[$i % 16]);
+		$text = @gzuncompress($data);
+		if (!is_string($text)) return '';
+		return strncmp($text, "\xEF\xBB\xBF", 3) === 0 ? substr($text, 3) : $text;
 	}
 
 	private function parseLyrics($text, $source) {
@@ -860,14 +1088,14 @@ class musicPlugin extends PluginBase {
 		return @$parser->analyze('kodio://'.$path, intval($source['size']), $source['name']);
 	}
 
-	private function httpGet($url) {
+	private function httpGet($url, $headers = array(), $timeout = 8) {
 		if (!function_exists('curl_init')) return '';
 		$curl = curl_init($url);
 		curl_setopt_array($curl, array(
 			CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => true,
-			CURLOPT_CONNECTTIMEOUT => 4, CURLOPT_TIMEOUT => 8,
-			CURLOPT_USERAGENT => 'music-player/0.4.2',
-			CURLOPT_HTTPHEADER => array('Lrclib-Client: music-player/0.4.2'),
+			CURLOPT_CONNECTTIMEOUT => 4, CURLOPT_TIMEOUT => $timeout,
+			CURLOPT_USERAGENT => 'music-player/0.5.0',
+			CURLOPT_HTTPHEADER => $headers,
 		));
 		$body = curl_exec($curl);
 		$code = intval(curl_getinfo($curl, CURLINFO_HTTP_CODE));
@@ -988,18 +1216,27 @@ class musicPlugin extends PluginBase {
 		));
 	}
 
+	// A timestamp with no text after it marks where the previous word stops sounding.
 	private function wordTimes($body, $lineTime) {
 		if (!preg_match('/<\d{1,2}:\d{2}/', $body)) return array();
 		$words = array();
 		if (!preg_match_all('/(?:<(\d{1,2}):(\d{2}(?:\.\d+)?)>)([^<]*)/', $body, $found, PREG_SET_ORDER)) return array();
 		foreach ($found as $part) {
-			if ($part[3] === '') continue;
-			$words[] = array(
-				't' => ($part[1] === '' ? $lineTime : intval($part[1]) * 60 + floatval($part[2])),
-				'w' => $part[3],
-			);
+			$t = $part[1] === '' ? $lineTime : intval($part[1]) * 60 + floatval($part[2]);
+			if ($part[3] === '') {
+				$last = count($words) - 1;
+				if ($last >= 0 && empty($words[$last]['e']) && $t > $words[$last]['t']) $words[$last]['e'] = $t;
+				continue;
+			}
+			$words[] = array('t' => $t, 'w' => $part[3]);
 		}
 		return $words;
+	}
+
+	private function word($t, $w, $e = 0) {
+		$word = array('t' => round($t, 3), 'w' => $w);
+		if ($e > $t) $word['e'] = round($e, 3);
+		return $word;
 	}
 
 	private function homePath() {
@@ -1009,29 +1246,36 @@ class musicPlugin extends PluginBase {
 		return $sourceID ? KodIO::make($sourceID) : '';
 	}
 
+	// Returns "{source:N}" for 音乐资料/<kind> in the user's home, creating it when missing.
 	private function offlineDir($kind) {
-		$home = $this->homePath();
-		if ($home === '') return '';
-		$dir = rtrim($home, '/').'/音乐资料/'.$kind;
-		if ($this->kodNode($dir, true)) return $dir;
-		try { IO::mkdir($dir); } catch (Throwable $e) { return ''; }
-		return $this->kodNode($dir, true) ? $dir : '';
+		if (!preg_match('/^\{source:(\d+)\}/', $this->homePath(), $m)) return '';
+		$dir = KodIO::make(intval($m[1]));
+		foreach (array('音乐资料', $kind) as $name) {
+			$node = $this->kodNode($dir, $name, true);
+			if (!$node) {
+				try { IO::mkdir(rtrim($dir, '/').'/'.$name); } catch (Throwable $e) { return ''; }
+				$node = $this->kodNode($dir, $name, true);
+			}
+			if (!$node) return '';
+			$dir = KodIO::make(intval($node['sourceID']));
+		}
+		return rtrim($dir, '/');
 	}
 
-	// IO::info resolves a missing child path to its nearest existing parent, so match the name and type too.
-	private function kodNode($path, $folder) {
-		try { $info = IO::info($path); } catch (Throwable $e) { return null; }
-		if (!is_array($info) || !_get($info, 'sourceID')) return null;
-		if (intval(_get($info, 'isFolder', 0)) !== ($folder ? 1 : 0)) return null;
-		$path = rtrim($path, '/');
-		$name = substr($path, strrpos($path, '/') + 1);
-		return _get($info, 'name', '') === $name ? $info : null;
+	// Looked up by parent ID and name: IO::info on "{source:N}/name" falls back to the parent for some names.
+	private function kodNode($dir, $name, $folder) {
+		if (!preg_match('/^\{source:(\d+)\}/', (string)$dir, $m)) return null;
+		$row = Model('Source')->where(array(
+			'parentID' => intval($m[1]), 'name' => $name,
+			'isFolder' => $folder ? 1 : 0, 'isDelete' => 0,
+		))->find();
+		return $row ? $row : null;
 	}
 
 	private function offlineLyrics($sourceID) {
 		$dir = $this->offlineDir('歌词');
 		if ($dir === '') return null;
-		$info = $this->kodNode($dir.'/'.intval($sourceID).'.lrc', false);
+		$info = $this->kodNode($dir, intval($sourceID).'.lrc', false);
 		if (!$info) return null;
 		try { $text = IO::getContent(KodIO::make($info['sourceID'])); } catch (Throwable $e) { return null; }
 		if (!is_string($text) || trim($text) === '') return null;
@@ -1044,7 +1288,7 @@ class musicPlugin extends PluginBase {
 		$dir = $this->offlineDir('封面');
 		if ($dir === '') return '';
 		foreach (array('jpg','png','webp','img') as $ext) {
-			$info = $this->kodNode($dir.'/'.intval($sourceID).'.'.$ext, false);
+			$info = $this->kodNode($dir, intval($sourceID).'.'.$ext, false);
 			if ($info && intval(_get($info, 'size', 0)) > 32) return KodIO::make($info['sourceID']);
 		}
 		return '';
@@ -1073,7 +1317,7 @@ class musicPlugin extends PluginBase {
 		$dir = $this->offlineDir('歌词');
 		if ($dir === '') return;
 		$path = $dir.'/'.intval($sourceID).'.lrc';
-		$info = $this->kodNode($path, false);
+		$info = $this->kodNode($dir, intval($sourceID).'.lrc', false);
 		if (!$info) return;
 		try { $text = IO::getContent(KodIO::make($info['sourceID'])); } catch (Throwable $e) { return; }
 		if (!is_string($text)) return;
@@ -1083,23 +1327,32 @@ class musicPlugin extends PluginBase {
 	}
 
 	private function toLrc($data) {
-		$lines = array('[offset:+'.intval(_get($data, 'lyricOffset', 0)).']');
+		$offset = intval(_get($data, 'lyricOffset', 0));
+		$lines = array('[offset:'.($offset >= 0 ? '+' : '').$offset.']');
 		foreach ((array)$data['synced'] as $row) {
 			$sec = floatval($row['t']);
 			$m = floor($sec / 60); $s = $sec - $m * 60;
 			$body = $row['line'];
 			if (!empty($row['words'])) {
 				$body = '';
-				foreach ($row['words'] as $word) {
-					$ws = floatval($word['t']);
-					$wm = floor($ws / 60); $wr = $ws - $wm * 60;
-					$body .= sprintf('<%02d:%05.2f>', $wm, $wr).$word['w'];
+				$words = array_values($row['words']);
+				foreach ($words as $i => $word) {
+					$body .= $this->lrcStamp($word['t']).$word['w'];
+					$end = floatval(_get($word, 'e', 0));
+					$next = isset($words[$i + 1]) ? floatval($words[$i + 1]['t']) : 0;
+					if ($end > floatval($word['t']) && (!$next || $next - $end > 0.03)) $body .= $this->lrcStamp($end);
 				}
 			}
 			$lines[] = sprintf('[%02d:%05.2f]%s', $m, $s, $body);
 		}
 		if (count($lines) === 1 && $data['text'] !== '') $lines[] = $data['text'];
 		return implode("\n", $lines)."\n";
+	}
+
+	private function lrcStamp($sec) {
+		$sec = floatval($sec);
+		$m = floor($sec / 60);
+		return sprintf('<%02d:%05.2f>', $m, $sec - $m * 60);
 	}
 
 	private function signedUrl($method, $sourceID) {

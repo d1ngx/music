@@ -159,6 +159,7 @@
 			try{win.localStorage.setItem(RECENT,JSON.stringify(list.slice(0,40)))}catch(e){}
 		}
 		E.recent=function(){try{var v=JSON.parse(win.localStorage.getItem(RECENT)||'[]');return Array.isArray(v)?v:[]}catch(e){return []}};
+		function lyricData(d){return {synced:d.synced||[],text:d.text||'',source:d.source||'',wordSources:!!d.wordSources}}
 		function loadLyrics(token,t){
 			S.lyrics={synced:[],text:''};
 			var hit=S.cache[t.sourceID];
@@ -166,7 +167,7 @@
 			S.lyricState='loading';emit('lyrics');
 			E.api('lyrics',{sourceid:t.sourceID}).then(function(d){
 				if(S.token!==token)return;
-				S.lyrics={synced:d.synced||[],text:d.text||''};
+				S.lyrics=lyricData(d);
 				S.lyricState=(S.lyrics.synced.length||S.lyrics.text)?'ok':'none';
 				if(S.lyricState==='ok')S.cache[t.sourceID]=S.lyrics;
 				if(typeof d.lyricOffset==='number'){t.lyricOffset=d.lyricOffset;S.offset=d.lyricOffset/1000}
@@ -372,14 +373,20 @@
 		};
 		E.importLyrics=function(text){
 			var t=E.track();if(!t)return Promise.reject(new Error('先播放一首歌'));
-			return E.api('lyricImport',{sourceid:t.sourceID,text:text},true).then(function(d){
-				S.lyrics={synced:d.synced||[],text:d.text||''};
-				S.lyricState=(S.lyrics.synced.length||S.lyrics.text)?'ok':'none';
-				S.cache[t.sourceID]=S.lyrics;
-				emit('lyrics');
-				return d;
-			});
+			return E.api('lyricImport',{sourceid:t.sourceID,text:text},true).then(function(d){return useLyrics(t,d)});
 		};
+		E.searchLyrics=function(){
+			var t=E.track();if(!t)return Promise.reject(new Error('先播放一首歌'));
+			return E.api('lyricSearch',{sourceid:t.sourceID},true).then(function(d){return useLyrics(t,d)});
+		};
+		function useLyrics(t,d){
+			S.lyrics=lyricData(d);
+			S.lyricState=(S.lyrics.synced.length||S.lyrics.text)?'ok':'none';
+			S.cache[t.sourceID]=S.lyrics;
+			if(typeof d.lyricOffset==='number'){t.lyricOffset=d.lyricOffset;S.offset=d.lyricOffset/1000}
+			emit('lyrics');
+			return d;
+		}
 		E.setFavorite=function(track,on){
 			if(!track||track.transient)return Promise.reject(new Error('先把这首扫描进曲库，才能标记喜爱'));
 			return E.api('favorite',{sourceid:track.sourceID,favorite:on?1:0},true).then(function(){
@@ -501,14 +508,21 @@
 				inner.appendChild(p);
 			});
 		}
+		// Only sweep words that carry their own timing; line-synced lyrics just highlight the whole line.
 		function karaoke(node,line,end){
-			node.textContent='';spans=[];
-			var words=line.words&&line.words.length?line.words:[{t:line.t,w:line.line||'♪'}];
-			words.forEach(function(word,n){
+			spans=[];
+			var words=line.words||[];
+			if(!words.length)return;
+			node.textContent='';
+			var n=words.length,avg=n>1?(words[n-1].t-words[0].t)/(n-1):0;
+			words.forEach(function(word,i){
 				var s=doc.createElement('span');
 				s.className='lx-w';
 				s.textContent=word.w;
-				var t1=words[n+1]?words[n+1].t:end;
+				var next=words[i+1]?words[i+1].t:end,t1;
+				if(word.e>word.t)t1=Math.min(word.e,Math.max(next,word.t+0.05));
+				else if(words[i+1])t1=next;
+				else t1=Math.min(end,word.t+Math.max(0.6,Math.min(3,(avg||1.5)*2)));
 				spans.push({el:s,t0:word.t,t1:t1>word.t?t1:word.t+0.3});
 				node.appendChild(s);
 			});

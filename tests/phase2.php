@@ -2,7 +2,13 @@
 // Isolated checks for the library scan. Builds SQL only.
 // Does not connect to KodBox, the database, or the user's files.
 
-class PluginBase {}
+class PluginBase {
+	public $config = array(
+		'fileExt' => 'mp3,flac,m4a,aac,ogg,oga,opus,wav,wma',
+		'scanVideo' => 0,
+	);
+	public function getConfig() { return $this->config; }
+}
 function _get($arr, $key, $default = null) {
 	if (!is_array($arr)) return $default;
 	foreach (explode('.', $key) as $k) {
@@ -31,6 +37,9 @@ function check($name, $ok) {
 $sql = $call('scanBatchSql', 7, array('mp3', 'FLAC', 'mp4'), 80);
 check('a manual scan is limited to that user\'s own files', strpos($sql, 's.targetType=1') !== false && strpos($sql, 'AND s.targetID=7') !== false);
 check('a batch only loads new or changed files', strpos($sql, 't.id IS NULL OR t.sourceModifyTime<>s.modifyTime') !== false);
+check('a zero duration is tried again after a day, and new files go first', strpos($sql, 't.duration=0 AND t.modifyTime<') !== false && strpos($sql, 'ORDER BY (t.id IS NULL) DESC') !== false);
+$fixed = $call('scanBatchSql', 7, array('mp3'), 80, 2000000);
+check('the retry cutoff is one day before the given time', strpos($fixed, 't.modifyTime<'.(2000000 - 86400)) !== false);
 check('the batch stops at the configured size', (bool)preg_match('/LIMIT 80$/', $sql));
 check('extensions are quoted and normalized', strpos($sql, "'mp3','flac','mp4'") !== false);
 check('shared files are not part of the query', stripos($sql, 'share') === false && strpos($sql, 'parentLevel') === false);
@@ -45,12 +54,25 @@ $capped = $call('scanBatchSql', 7, array('mp3'), 9999);
 check('the batch size cannot exceed 200', (bool)preg_match('/LIMIT 200$/', $capped));
 
 $missing = $call('missingTracksSql', 3);
-check('cleanup only drops index rows whose owned file is gone', strpos($missing, 's.sourceID IS NULL') !== false && strpos($missing, 's.targetType=1') !== false && strpos($missing, 'AND t.userID=3') !== false);
+check('cleanup drops a missing file or a file that is no longer audio or video', strpos($missing, 's.sourceID IS NULL') !== false && strpos($missing, "s.fileType NOT IN") !== false && strpos($missing, "'mp3'") !== false && strpos($missing, "'mp4'") !== false && strpos($missing, 'AND t.userID=3') !== false);
 $missingAll = $call('missingTracksSql', null);
 check('scheduled cleanup does not add a single-user filter', strpos($missingAll, 'AND t.userID=') === false);
 
+$plugin->config = array('fileExt' => 'mp3,aiff', 'scanVideo' => 0);
+$customExt = $call('scanExtensions');
+$customScan = $call('scanBatchSql', 1, $customExt, 80, 2000000);
+$customKeep = $call('missingTracksSql', 1);
+check('a configured extension is both indexed and kept', strpos($customScan, "'aiff'") !== false && strpos($customKeep, "'aiff'") !== false);
+check('videos stay listed when video scanning is off', strpos($customScan, "'mp4'") === false && strpos($customKeep, "'mp4'") !== false);
+
 check('albums group by artist and title, not year', $call('albumKey', '王若琳', '迷宫') === $call('albumKey', '王若琳', '迷宫') && strpos($call('albumKey', 'A', 'B'), '1999') === false);
 check('album keys ignore letter case', $call('albumKey', 'Artist', 'Album') === 'artist|album');
+
+check('a failed read keeps the metadata already stored', $call('indexKeepsMetadata', false, array('id' => 1)) === true);
+check('a successful read replaces metadata', $call('indexKeepsMetadata', true, array('id' => 1)) === false);
+check('a new file is stored even when the read fails', $call('indexKeepsMetadata', false, null) === false);
+check('a cover requested by someone is cached for that person', $call('coverUser', array('targetID' => 4), 9) === 9);
+check('a scan with no viewer caches the cover for the file owner', $call('coverUser', array('targetID' => 4), 0) === 4);
 
 $row = $call('rowKeys', array('sourceid' => 9, 'targetid' => 7, 'userid' => 7, 'filetype' => 'mp3', 'modifytime' => 12));
 check('driver column names map back to the indexer', $row['sourceID'] === 9 && $row['targetID'] === 7 && $row['userID'] === 7 && $row['fileType'] === 'mp3' && $row['modifyTime'] === 12);

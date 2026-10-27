@@ -2,7 +2,7 @@
 	"id":"music",
 	"name":"{{LNG['music.meta.name']}}",
 	"title":"{{LNG['music.meta.title']}}",
-	"version": "0.5.5",
+	"version": "0.5.6",
 	"category":"media,file",
 	"source":{"icon":"{{pluginHost}}static/icon.svg","thumb":"{{pluginHost}}static/icon.svg"},
 	"description":"{{LNG['music.meta.desc']}}",

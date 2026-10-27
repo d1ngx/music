@@ -122,7 +122,7 @@ class musicPlugin extends PluginBase {
 		$file = $this->coverFile($sourceID);
 		$offline = $this->offlineCover($sourceID);
 		if ($offline) return IO::fileOut($offline);
-		if (!is_file($file) || filesize($file) < 32) $this->collectCover($source);
+		if (!is_file($file) || filesize($file) < 32) $this->collectCover($source, KodUser::id());
 		if (is_file($file) && filesize($file) >= 32) return IO::fileOut($file);
 		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
 		$artist = $track ? $track['artist'] : '';
@@ -364,18 +364,20 @@ class musicPlugin extends PluginBase {
 	}
 
 	// Owned media only: targetType 1 and, for a manual scan, targetID is that user.
-	private function scanBatchSql($userID, $extensions, $limit) {
+	private function scanBatchSql($userID, $extensions, $limit, $now = null) {
 		$ext = $this->sqlExtList($extensions);
 		if ($ext === '') return '';
 		$owner = $userID !== null ? ' AND s.targetID='.intval($userID) : '';
 		$limit = max(1, min(200, intval($limit)));
+		$now = $now === null ? time() : intval($now);
+		$retryBefore = $now - 86400;
 		return 'SELECT s.sourceID AS sourceID, s.targetID AS targetID, s.fileID AS fileID, s.name AS name, s.fileType AS fileType, s.size AS size, s.modifyTime AS modifyTime'
 			.' FROM io_source s'
 			.' LEFT JOIN plugin_music_track t ON t.userID=s.targetID AND t.sourceID=s.sourceID'
 			.' WHERE s.targetType=1 AND s.isFolder=0 AND s.isDelete=0'.$owner
 			.' AND s.fileType IN ('.$ext.')'
-			.' AND (t.id IS NULL OR t.sourceModifyTime<>s.modifyTime)'
-			.' ORDER BY s.modifyTime DESC LIMIT '.$limit;
+			.' AND (t.id IS NULL OR t.sourceModifyTime<>s.modifyTime OR (t.duration=0 AND t.modifyTime<'.$retryBefore.'))'
+			.' ORDER BY (t.id IS NULL) DESC, s.modifyTime DESC LIMIT '.$limit;
 	}
 
 	private function sqlExtList($extensions) {
@@ -424,10 +426,16 @@ class musicPlugin extends PluginBase {
 		return array_values($out);
 	}
 
+	// A failed read of an existing row must not wipe tags. Stamp the attempt and try a zero-duration row again after a day.
+	private function indexKeepsMetadata($read, $existing) {
+		return !$read && !empty($existing);
+	}
+
 	private function indexSource($source, $existing) {
 		$meta = array('title' => '', 'artist' => '', 'album' => '', 'genre' => '', 'year' => '', 'trackNo' => 0, 'duration' => 0, 'hasCover' => 0);
 		$video = $this->isVideo($source['fileType']);
 		$fromName = $this->parseMediaName($source['name']);
+		$read = false;
 		try {
 			$info = GetInfo::get(KodIO::make(intval($source['sourceID'])));
 			$more = (array)_get($info, 'fileInfoMore', array());
@@ -441,7 +449,16 @@ class musicPlugin extends PluginBase {
 				$meta['year'] = $this->clip(_get($tags, 'year', ''), 16);
 				$meta['trackNo'] = intval(_get($tags, 'track', 0));
 			}
+			$read = true;
 		} catch (Throwable $e) {}
+		if ($this->indexKeepsMetadata($read, $existing)) {
+			$model = Model($this->tableName); $model->setDataAuto(false);
+			$model->where(array('id' => intval($existing['id']), 'userID' => intval($existing['userID'])))->save(array(
+				'sourceModifyTime' => intval($source['modifyTime']),
+				'modifyTime' => time(),
+			));
+			return;
+		}
 		if ($meta['title'] === '' || $meta['title'] === $source['name']) $meta['title'] = $fromName['title'];
 		if ($meta['artist'] === '') $meta['artist'] = $fromName['artist'];
 		if ($this->collectCover($source)) $meta['hasCover'] = 1;
@@ -464,10 +481,16 @@ class musicPlugin extends PluginBase {
 		}
 	}
 
-	private function collectCover($source) {
+	// The viewer gets their own cache. A scan with no viewer stores it for the file's owner.
+	private function coverUser($source, $userID) {
+		$uid = intval($userID);
+		return $uid > 0 ? $uid : intval(_get($source, 'targetID', 0));
+	}
+
+	private function collectCover($source, $userID = null) {
 		$dir = $this->coverDir();
 		if (!is_dir($dir)) @mkdir($dir, 0755, true);
-		$target = $this->coverFile(intval($source['sourceID']), intval(_get($source, 'targetID', KodUser::id())));
+		$target = $this->coverFile(intval($source['sourceID']), $this->coverUser($source, $userID));
 		$picture = $this->isVideo($source['fileType']) ? '' : $this->embeddedPicture($source);
 		if ($picture) {
 			@file_put_contents($target, $picture);
@@ -1286,10 +1309,13 @@ class musicPlugin extends PluginBase {
 
 	private function missingTracksSql($userID) {
 		$owner = $userID !== null ? ' AND t.userID='.intval($userID) : '';
+		// Keep the extensions this scan would index, and every video type even when video scanning is off.
+		$media = $this->sqlExtList(array_merge($this->scanExtensions(), $this->videoExt));
+		$gone = $media === '' ? 's.sourceID IS NULL' : '(s.sourceID IS NULL OR s.fileType NOT IN ('.$media.'))';
 		return 'SELECT t.id AS id, t.userID AS userID, t.sourceID AS sourceID'
 			.' FROM plugin_music_track t'
 			.' LEFT JOIN io_source s ON s.sourceID=t.sourceID AND s.targetID=t.userID AND s.targetType=1 AND s.isDelete=0 AND s.isFolder=0'
-			.' WHERE s.sourceID IS NULL'.$owner;
+			.' WHERE '.$gone.$owner;
 	}
 
 	private function assertTrack($sourceID) {

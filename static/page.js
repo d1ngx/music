@@ -127,21 +127,22 @@ function boot(){
 	function playKind(){return (V.detail&&V.detail.builtin||!V.detail&&V.view==='tracks')&&!V.pageQ?'all':'custom'}
 
 	/* ---------- navigation ---------- */
+	function clearPicked(){V.picked={}}
 	function go(view){
 		V.view=view;V.detail=null;V.stack=[];V.pageQ='';$('page-search').value='';
 		if(view!=='search'){V.q='';$('global-search').value=''}
-		V.sort={key:'',dir:1};
+		V.sort={key:'',dir:1};clearPicked();
 		render();library.scrollTop=0;
 		$('app').classList.remove('nav-open');
 	}
 	function open(detail){
 		V.stack.push({view:V.view,detail:V.detail,scroll:library.scrollTop});
-		V.detail=detail;V.pageQ='';$('page-search').value='';
+		V.detail=detail;V.pageQ='';$('page-search').value='';clearPicked();
 		render();library.scrollTop=0;
 	}
 	function back(){
 		var s=V.stack.pop();if(!s)return;
-		V.view=s.view;V.detail=s.detail;render();library.scrollTop=s.scroll||0;
+		V.view=s.view;V.detail=s.detail;clearPicked();render();library.scrollTop=s.scroll||0;
 	}
 	function paintNav(){
 		document.querySelectorAll('.nav-item[data-view]').forEach(function(n){n.classList.toggle('active',!V.detail&&n.dataset.view===V.view)});
@@ -469,16 +470,19 @@ function boot(){
 	function removeFromList(listId,ids){
 		ids=[].concat(ids).map(function(x){return x&&x.sourceID?+x.sourceID:+x}).filter(function(id){return id>0});
 		if(!ids.length)return;
-		api('playlistRemove',{id:listId,sourceids:ids.join(',')},true).then(function(d){
-			var gone={};(d.sourceIDs||ids).forEach(function(id){gone[+id]=1;delete V.picked[id]});
-			var detail=V.detail;
-			if(detail&&detail.type==='list'&&String(detail.id)===String(listId)&&detail.tracks){
-				detail.tracks=detail.tracks.filter(function(x){return !gone[x.sourceID]});
-				render();
-			}else paintPick();
-			loadLists();
-			toast('已从播放列表移除 '+(d.sourceIDs||ids).length+' 首');
-		}).catch(function(e){toast(e.message)});
+		confirmBox('从播放列表移除 '+ids.length+' 首？','只从播放列表里去掉，原来的文件还在。','移除',true).then(function(ok){
+			if(!ok)return;
+			api('playlistRemove',{id:listId,sourceids:ids.join(',')},true).then(function(d){
+				var gone={};(d.sourceIDs||ids).forEach(function(id){gone[+id]=1;delete V.picked[id]});
+				var detail=V.detail;
+				if(detail&&detail.type==='list'&&String(detail.id)===String(listId)&&detail.tracks){
+					detail.tracks=detail.tracks.filter(function(x){return !gone[x.sourceID]});
+					render();
+				}else paintPick();
+				loadLists();
+				toast('已从播放列表移除 '+(d.sourceIDs||ids).length+' 首');
+			}).catch(function(e){toast(e.message)});
+		});
 	}
 	function listMenu(at,d){
 		openMenu(at,[
@@ -787,7 +791,7 @@ function boot(){
 	$('global-search').addEventListener('input',function(){
 		var v=this.value.trim();clearTimeout(searchTimer);
 		searchTimer=setTimeout(function(){
-			if(v){if(V.view!=='search')V.prevView=V.view;V.q=v;V.view='search';V.detail=null;V.stack=[];render();library.scrollTop=0}
+			if(v){if(V.view!=='search')V.prevView=V.view;V.q=v;V.view='search';V.detail=null;V.stack=[];clearPicked();render();library.scrollTop=0}
 			else if(V.view==='search')go(V.prevView||'home');
 		},180);
 	});

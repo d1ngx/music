@@ -13,7 +13,7 @@ kodReady.push(function(){
 	Router.mapIframe({page:'music', title:LNG['music.meta.name'], url:'{{pluginApi}}', ignoreLogin:false});
 	if(!window.KodMusic && window.fetch && window.Promise){
 		window.KodMusic = {engine:null, pending:[]};
-		var host = '{{pluginHost}}static/', ver = '?v=0.5.0';
+		var host = '{{pluginHost}}static/', ver = '?v=0.5.4';
 		var css = document.createElement('link');
 		css.rel = 'stylesheet';
 		css.href = host + 'mini.css' + ver;

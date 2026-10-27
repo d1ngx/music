@@ -48,6 +48,25 @@
 	function icon(name,cls){return '<svg class="i'+(cls?' '+cls:'')+'" viewBox="0 0 24 24" '+STROKE+' aria-hidden="true">'+(ICONS[name]||'')+'</svg>'}
 	function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 	function fmt(sec){if(!isFinite(sec)||sec<0)return '--:--';sec=Math.floor(sec);var h=Math.floor(sec/3600),m=Math.floor(sec%3600/60),s=sec%60;return (h?h+':'+(m<10?'0':''):'')+m+':'+(s<10?'0':'')+s}
+	// ignore: our own src change aborted the previous load.
+	// stay: decode errors, or the retry budget is used up. The track does not change.
+	// retry: network, unsupported-src, and stalls, up to two times.
+	var PLAYBACK_TRIES = 2;
+	var PLAYBACK_STALL = 12000;
+	function playbackFault(code, tries) {
+		code = code || 0;
+		tries = tries || 0;
+		if (code === 1) return 'ignore';
+		if (code === 3) return 'stay';
+		return tries < PLAYBACK_TRIES ? 'retry' : 'stay';
+	}
+	function playbackMessage(code) {
+		if (code === 3) return '解码失败，文件可能已损坏';
+		if (code === 4) return '浏览器不支持这个格式';
+		if (code === 2 || code === 0) return '网络中断，已停在当前歌曲';
+		return '无法播放，已停在当前歌曲';
+	}
+
 	function plain(track){
 		var out={};
 		['id','sourceID','title','artist','album','trackNo','duration','year','ext','favorite','createTime','lyricOffset','isVideo','path','cover','transient','albumKey'].forEach(function(k){if(track&&track[k]!==undefined)out[k]=track[k]});
@@ -74,7 +93,8 @@
 		var userKey='';
 		try{userKey=String((win.G&&win.G.user&&win.G.user.userID)||'')}catch(e){}
 		var SNAP='kod-music-snap-'+userKey;
-		var S={entries:[],index:-1,past:[],order:[],seq:1,repeat:'off',shuffle:false,volume:.8,muted:false,offset:0,lyrics:{synced:[],text:''},lyricState:'idle',cache:{},token:0,failRun:0,dirty:false,loading:false,blocked:false,error:'',resumeAt:0,retried:false,queueKind:''};
+		var S={entries:[],index:-1,past:[],order:[],seq:1,repeat:'off',shuffle:false,volume:.8,muted:false,offset:0,lyrics:{synced:[],text:''},lyricState:'idle',cache:{},token:0,tries:0,dirty:false,loading:false,blocked:false,error:'',resumeAt:0,queueKind:''};
+		var stallTimer=0;
 		var subs=[];
 		var E={state:S,audio:audio,video:video,ui:null,win:win};
 
@@ -205,7 +225,7 @@
 			}).catch(function(err){
 				if(S.token!==token)return;
 				S.loading=false;
-				fail(err.message||'无法获取播放地址');
+				stay(err.message||'无法获取播放地址');
 			});
 		}
 		E.play=function(entryId,opts){
@@ -213,7 +233,7 @@
 			var i=indexOf(entryId);if(i<0)return;
 			var prev=E.current();
 			if(prev&&prev.entryId!==entryId&&!opts.fromPast){S.past.push(prev);if(S.past.length>200)S.past.shift()}
-			S.index=i;S.token++;S.error='';S.blocked=false;S.retried=false;S.resumeAt=0;
+			S.index=i;S.token++;S.error='';S.blocked=false;S.tries=0;S.resumeAt=0;clearStall();
 			var t=S.entries[i].track;
 			S.offset=(t.lyricOffset||0)/1000;
 			halt(audio);halt(video);
@@ -229,7 +249,7 @@
 			if(!tracks||!tracks.length)return false;
 			if(typeof opts.shuffle==='boolean')S.shuffle=opts.shuffle;
 			S.entries=tracks.map(function(t){return {entryId:S.seq++,track:plain(t)}});
-			S.past=[];S.dirty=false;S.failRun=0;S.queueKind=opts.kind==='all'?'all':'custom';
+			S.past=[];S.dirty=false;S.queueKind=opts.kind==='all'?'all':'custom';
 			if(start==null||start<0)start=S.shuffle?Math.floor(Math.random()*S.entries.length):0;
 			start=Math.max(0,Math.min(start,S.entries.length-1));
 			S.index=start;buildOrder();S.index=-1;
@@ -248,12 +268,30 @@
 			return true;
 		};
 		E.isDirty=function(){return S.dirty&&E.upNext().length>0};
-		function fail(msg){
-			S.error=msg;S.failRun++;
-			emit('error');
-			if(S.failRun>=Math.max(1,S.entries.length)){S.failRun=0;emit('state');return}
-			var token=S.token;
-			setTimeout(function(){if(S.token===token)E.next({natural:true,skip:true})},900);
+		function clearStall(){if(stallTimer){clearTimeout(stallTimer);stallTimer=0}}
+		function stay(msg){clearStall();S.loading=false;S.error=msg;emit('error');emit('state')}
+		function reload(el){
+			var cur=E.current();
+			if(!cur||el!==E.media())return;
+			if(playbackFault(0,S.tries)==='stay'){stay(playbackMessage(0));return}
+			S.tries++;clearStall();
+			var at=el.currentTime||0,token=++S.token;
+			E.api('source',{sourceid:cur.track.sourceID}).then(function(d){
+				if(S.token!==token)return;
+				el.src=d.stream;
+				el.addEventListener('loadedmetadata',function once(){el.removeEventListener('loadedmetadata',once);try{if(at>0)el.currentTime=at}catch(e){}});
+				var p=el.play();if(p&&p.catch)p.catch(function(){});
+			}).catch(function(err){if(S.token===token)stay(err.message||playbackMessage(2))});
+		}
+		function armStall(el){
+			if(stallTimer||el!==E.media()||el.paused||el.ended||S.blocked)return;
+			var token=S.token,at=el.currentTime||0;
+			stallTimer=setTimeout(function(){
+				stallTimer=0;
+				if(S.token!==token||el!==E.media()||el.paused||el.ended)return;
+				if((el.currentTime||0)>at+0.3)return;
+				reload(el);
+			},PLAYBACK_STALL);
 		}
 		E.next=function(opts){
 			opts=opts||{};
@@ -297,6 +335,7 @@
 				load(cur,{autoplay:true,seek:at});
 				return;
 			}
+			if(m.error){S.tries=0;S.error='';S.blocked=false;reload(m);return}
 			if(m.paused||m.ended){S.blocked=false;var p=m.play();if(p&&p.catch)p.catch(function(err){if(err&&err.name==='NotAllowedError'){S.blocked=true;emit('state')}})}
 			else m.pause();
 		};
@@ -379,6 +418,10 @@
 			var t=E.track();if(!t)return Promise.reject(new Error('先播放一首歌'));
 			return E.api('lyricSearch',{sourceid:t.sourceID},true).then(function(d){return useLyrics(t,d)});
 		};
+		E.refreshLyrics=function(){
+			var t=E.track();if(!t)return Promise.reject(new Error('先播放一首歌'));
+			return E.api('lyricRefresh',{sourceid:t.sourceID},true).then(function(d){return useLyrics(t,d)});
+		};
 		function useLyrics(t,d){
 			S.lyrics=lyricData(d);
 			S.lyricState=(S.lyrics.synced.length||S.lyrics.text)?'ok':'none';
@@ -430,30 +473,22 @@
 
 		function onError(el){
 			return function(){
-				if(el!==E.media()||!el.getAttribute('src'))return;
-				var code=el.error&&el.error.code;
-				var cur=E.current();if(!cur)return;
-				if(!S.retried&&(code===2||code===4)){
-					S.retried=true;
-					var at=el.currentTime||0,token=++S.token;
-					E.api('source',{sourceid:cur.track.sourceID}).then(function(d){
-						if(S.token!==token)return;
-						el.src=d.stream;
-						el.addEventListener('loadedmetadata',function once(){el.removeEventListener('loadedmetadata',once);try{el.currentTime=at}catch(e){}});
-						el.play().catch(function(){});
-					}).catch(function(err){if(S.token===token)fail(err.message)});
-					return;
-				}
-				fail(code===3?'解码失败，文件可能已损坏':code===4?'浏览器不支持这个格式':code===2?'网络中断，已跳过':'无法播放');
+				if(el!==E.media()||!el.getAttribute('src')||!E.current())return;
+				var code=el.error&&el.error.code||0;
+				var step=playbackFault(code,S.tries);
+				if(step==='ignore')return;
+				if(step==='stay'){stay(playbackMessage(code));return}
+				reload(el);
 			};
 		}
 		[audio,video].forEach(function(el){
-			el.addEventListener('ended',function(){if(el===E.media())E.next({natural:true})});
-			el.addEventListener('playing',function(){if(el===E.media()){S.failRun=0;S.blocked=false;emit('state')}});
+			el.addEventListener('ended',function(){if(el===E.media()){clearStall();E.next({natural:true})}});
+			el.addEventListener('playing',function(){if(el===E.media()){S.tries=0;S.blocked=false;clearStall();emit('state')}});
 			el.addEventListener('play',function(){emit('state')});
-			el.addEventListener('pause',function(){emit('state');save()});
-			el.addEventListener('waiting',function(){emit('state')});
-			el.addEventListener('timeupdate',function(){if(el===E.media())emit('time')});
+			el.addEventListener('pause',function(){if(el===E.media())clearStall();emit('state');save()});
+			el.addEventListener('waiting',function(){if(el===E.media())armStall(el);emit('state')});
+			el.addEventListener('stalled',function(){if(el===E.media())armStall(el)});
+			el.addEventListener('timeupdate',function(){if(el===E.media()){clearStall();emit('time')}});
 			el.addEventListener('loadedmetadata',function(){if(el===E.media())emit('time')});
 			el.addEventListener('error',onError(el));
 		});
@@ -631,5 +666,5 @@
 		}catch(e){cb(null)}
 	}
 
-	global.KodMusicEngine={create:create,icon:icon,esc:esc,fmt:fmt,mountLyrics:mountLyrics,mountQueue:mountQueue,palette:palette,lyricIndex:lyricIndex};
+	global.KodMusicEngine={create:create,icon:icon,esc:esc,fmt:fmt,mountLyrics:mountLyrics,mountQueue:mountQueue,palette:palette,lyricIndex:lyricIndex,playbackFault:playbackFault,playbackMessage:playbackMessage,playbackTries:PLAYBACK_TRIES,playbackStall:PLAYBACK_STALL};
 })(window);

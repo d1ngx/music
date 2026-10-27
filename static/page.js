@@ -11,7 +11,7 @@ function boot(){
 	var S=E.state,icon=K.icon,esc=K.esc,fmt=K.fmt;
 	var $=function(id){return document.getElementById(id)};
 	var store=window.localStorage;
-	var V={view:'home',stack:[],detail:null,albums:[],tracks:[],bySource:{},lists:[],q:'',pageQ:'',sort:{key:'',dir:1},selected:0,recentMode:'albums',drawer:'',side:readPref('side','lyrics'),nowOpen:false,fit:'contain',ctx:[],loaded:false};
+	var V={view:'home',stack:[],detail:null,albums:[],tracks:[],bySource:{},lists:[],q:'',pageQ:'',sort:{key:'',dir:1},selected:0,picked:{},recentMode:'albums',drawer:'',side:readPref('side','lyrics'),nowOpen:false,fit:'contain',ctx:[],loaded:false};
 	var library=$('library'),menu=$('menu');
 	var NAMES={home:'主页',recent:'最近添加',artists:'艺人',albums:'专辑',tracks:'歌曲',favorites:'喜爱的歌曲',lists:'播放列表',search:'搜索结果'};
 	var CHUNK=200;
@@ -162,7 +162,7 @@ function boot(){
 		else if(d&&d.type==='artist')html=artistPage(d);
 		else if(d&&d.type==='list')html=listPage(d);
 		else html=({home:homePage,recent:recentPage,artists:artistsPage,albums:albumsPage,tracks:tracksPage,favorites:favPage,lists:listsPage,search:searchPage}[V.view]||homePage)();
-		library.innerHTML=html;
+		library.innerHTML=pickBar()+html;
 		if(!d)$('heading').textContent=NAMES[V.view]||'音乐';
 		observeMore();
 	}
@@ -194,7 +194,7 @@ function boot(){
 		var cur=curId(),html='';
 		for(var i=from;i<Math.min(list.length,from+count);i++){
 			var t=list[i],on=t.sourceID===cur;
-			html+='<div class="tr'+(on?' playing':'')+(V.selected===t.sourceID?' selected':'')+'" data-i="'+i+'" data-source="'+t.sourceID+'"'+(opts&&opts.list?' draggable="true"':'')+'>'+
+			html+='<div class="tr'+(on?' playing':'')+(V.selected===t.sourceID?' selected':'')+(V.picked[t.sourceID]?' picked':'')+'" data-i="'+i+'" data-source="'+t.sourceID+'"'+(opts&&opts.list?' draggable="true"':'')+'>'+
 				'<span class="c-n"><em>'+(opts&&opts.trackNo?(t.trackNo||'·'):(i+1))+'</em><button type="button" class="rp" data-act="play" title="播放">'+icon('play')+'</button><i class="eq"><b></b><b></b><b></b></i></span>'+
 				'<span class="c-t">'+(opts&&opts.trackNo?'':'<img loading="lazy" alt="" src="'+esc(t.cover||'')+'">')+'<span class="tt"><strong>'+esc(t.title)+(t.isVideo?' <em class="tag">视频</em>':'')+'</strong><small>'+esc(t.artist)+'</small></span></span>'+
 				'<span class="c-a"><button type="button" class="link" data-artist="'+esc(t.artist)+'">'+esc(t.artist)+'</button></span>'+
@@ -263,7 +263,8 @@ function boot(){
 	function albumsPage(){var list=albumMatches();return list.length?grid(list.map(card)):emptyHtml('没有专辑','album')}
 	function tracksPage(){
 		var list=pageFilter(V.tracks);
-		return '<div class="bar-actions"><span class="note">'+list.length+' 首歌曲 · '+minutes(total(list))+'</span><span class="spacer"></span><button type="button" class="btn primary" data-cmd="play-all"'+(list.length?'':' disabled')+'>'+icon('play')+'播放</button><button type="button" class="btn" data-cmd="shuffle-all"'+(list.length?'':' disabled')+'>'+icon('shuffle')+'随机播放</button></div>'+table(list,{sortable:true});
+		var videos=list.some(function(t){return t.isVideo});
+		return '<div class="bar-actions"><span class="note">'+list.length+' 首歌曲 · '+minutes(total(list))+'</span><span class="spacer"></span>'+(videos?'<button type="button" class="btn" data-cmd="drop-videos">移除视频</button>':'')+'<button type="button" class="btn primary" data-cmd="play-all"'+(list.length?'':' disabled')+'>'+icon('play')+'播放</button><button type="button" class="btn" data-cmd="shuffle-all"'+(list.length?'':' disabled')+'>'+icon('shuffle')+'随机播放</button></div>'+table(list,{sortable:true});
 	}
 	function favPage(){
 		var list=pageFilter(V.tracks.filter(function(t){return t.favorite}));
@@ -374,7 +375,11 @@ function boot(){
 		items.push({label:'稍后播放',icon:'list',act:function(){E.insert([t],true);toast('已添加到待播列表末尾')}});
 		items.push({sep:1});
 		items.push({label:'添加到播放列表',icon:'plus',sub:function(){return listSub(t)},disabled:t.transient?'先扫描进资料库':''});
-		if(extra&&extra.listId&&extra.listId!=='all')items.push({label:'从播放列表中移除',icon:'trash',act:function(){removeFromList(extra.listId,t)}});
+		var picked=Object.keys(V.picked).map(function(id){return +id});
+		var chosen=picked.length>1&&V.picked[t.sourceID]?picked:[t.sourceID];
+		if(extra&&extra.listId&&extra.listId!=='all')items.push({label:chosen.length>1?'从播放列表移除所选 '+chosen.length+' 首':'从播放列表中移除',icon:'trash',act:function(){removeFromList(extra.listId,chosen)}});
+		var dropIds=chosen;
+		items.push({label:dropIds.length>1?'从资料库移除所选 '+dropIds.length+' 首':'从资料库移除',icon:'trash',act:function(){dropLibrary(dropIds)},disabled:t.transient?'先扫描进资料库':''});
 		items.push({label:t.favorite?'取消喜爱':'喜爱',icon:t.favorite?'heartFill':'heart',act:function(){toggleFav(t)},disabled:t.transient?'先扫描进资料库':''});
 		items.push({sep:1});
 		if(t.albumKey)items.push({label:'前往专辑',icon:'album',act:function(){closeNow();open({type:'album',key:t.albumKey})}});
@@ -397,6 +402,7 @@ function boot(){
 			{label:'歌词延后 0.5 秒',icon:'right',act:function(){showOffset(E.nudgeOffset(-500))}},
 			{label:'重置偏移',icon:'refresh',act:function(){showOffset(E.nudgeOffset(0,true))},disabled:o?'':'当前没有偏移'},
 			{sep:1},
+			{label:'重新获取歌词',icon:'refresh',act:refreshLyrics},
 			{label:'在线查找逐字歌词',icon:'search',act:searchLyrics,disabled:S.lyrics.wordSources?(hasWords()?'已经是逐字歌词':''):'插件设置里没有开启逐字歌词来源'},
 			{label:'导入歌词文件…',icon:'upload',act:function(){$('lyric-file').click()}}
 		];
@@ -406,15 +412,72 @@ function boot(){
 		toast('正在查找逐字歌词…');
 		E.searchLyrics().then(function(d){toast('已换成逐字歌词（'+({amll:'AMLL TTML DB',kugou:'酷狗'}[d.source]||d.source)+'）')}).catch(function(e){toast(e.message)});
 	}
+	function refreshLyrics(){
+		toast('正在重新获取歌词…');
+		E.refreshLyrics().then(function(d){toast('已更新歌词'+(d.source?'（'+d.source+'）':''))}).catch(function(e){toast(e.message)});
+	}
+	function onCustomList(){return !!(V.detail&&V.detail.type==='list'&&!V.detail.builtin)}
+	function pickBar(){
+		var n=Object.keys(V.picked).length;
+		if(!n)return '';
+		var cmd=onCustomList()?'unlist-picked':'drop-picked';
+		var label=onCustomList()?'从播放列表移除':'从资料库移除';
+		return '<div class="pickbar"><span>已选 '+n+' 首</span><button type="button" class="btn" data-cmd="'+cmd+'">'+label+'</button><button type="button" class="btn" data-cmd="pick-clear">取消</button></div>';
+	}
+	function barSpace(bar){
+		var s=getComputedStyle(bar);
+		return bar.offsetHeight+(parseFloat(s.marginTop)||0)+(parseFloat(s.marginBottom)||0);
+	}
+	function paintPick(){
+		var n=Object.keys(V.picked).length;
+		var bar=library.querySelector('.pickbar');
+		if(!n){
+			if(!bar)return;
+			var top=library.scrollTop,h=barSpace(bar);
+			bar.remove();
+			library.scrollTop=Math.max(0,top-h);
+			return;
+		}
+		if(!bar){
+			var top=library.scrollTop;
+			library.insertAdjacentHTML('afterbegin',pickBar());
+			bar=library.querySelector('.pickbar');
+			if(bar)library.scrollTop=top+barSpace(bar);
+			return;
+		}
+		var label=bar.querySelector('span');
+		if(label)label.textContent='已选 '+n+' 首';
+	}
+	function dropLibrary(ids,videos){
+		var title=videos?'移除已入库的视频？':'从资料库移除 '+(ids?ids.length:0)+' 首？';
+		confirmBox(title,'只从曲库和播放列表里去掉，原来的文件不会被删除。','移除',true).then(function(ok){
+			if(!ok)return;
+			var body=videos?{videos:1}:{sourceids:(ids||[]).join(',')};
+			api('libraryRemove',body,true).then(function(d){
+				var gone={};(d.sourceIDs||[]).forEach(function(id){gone[id]=1;delete V.picked[id]});
+				if(V.detail&&V.detail.tracks)V.detail.tracks=V.detail.tracks.filter(function(t){return !gone[t.sourceID]});
+				toast('已从资料库移除 '+(d.sourceIDs||[]).length+' 首，文件仍在');
+				load();loadLists();
+			}).catch(function(e){toast(e.message)});
+		});
+	}
 	function showOffset(o){if(typeof o==='number')toast('歌词偏移 '+(o>0?'+':'')+o.toFixed(1)+' 秒')}
 	function copy(text){
 		if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(text).then(function(){toast('已复制')},function(){toast(text)});
 		else toast(text,5000);
 	}
-	function removeFromList(listId,t){
-		api('playlistRemove',{id:listId,sourceid:t.sourceID},true).then(function(){
-			var d=V.detail;if(d&&d.type==='list'&&d.id===listId&&d.tracks){d.tracks=d.tracks.filter(function(x){return x.sourceID!==t.sourceID});render()}
-			loadLists();toast('已从播放列表移除');
+	function removeFromList(listId,ids){
+		ids=[].concat(ids).map(function(x){return x&&x.sourceID?+x.sourceID:+x}).filter(function(id){return id>0});
+		if(!ids.length)return;
+		api('playlistRemove',{id:listId,sourceids:ids.join(',')},true).then(function(d){
+			var gone={};(d.sourceIDs||ids).forEach(function(id){gone[+id]=1;delete V.picked[id]});
+			var detail=V.detail;
+			if(detail&&detail.type==='list'&&String(detail.id)===String(listId)&&detail.tracks){
+				detail.tracks=detail.tracks.filter(function(x){return !gone[x.sourceID]});
+				render();
+			}else paintPick();
+			loadLists();
+			toast('已从播放列表移除 '+(d.sourceIDs||ids).length+' 首');
 		}).catch(function(e){toast(e.message)});
 	}
 	function listMenu(at,d){
@@ -456,6 +519,10 @@ function boot(){
 			if(cmd==='list-more')return listMenu(b,V.detail);
 			if(cmd==='album-more')return albumMenu(b,V.detail.key);
 			if(cmd==='list-new')return newList();
+			if(cmd==='drop-picked')return dropLibrary(Object.keys(V.picked).map(function(id){return +id}));
+			if(cmd==='unlist-picked'&&onCustomList())return removeFromList(V.detail.id,Object.keys(V.picked).map(function(id){return +id}));
+			if(cmd==='pick-clear'){V.picked={};library.querySelectorAll('.tr.picked').forEach(function(r){r.classList.remove('picked')});paintPick();return}
+			if(cmd==='drop-videos')return dropLibrary(null,true);
 			return go(cmd);
 		}
 		if(act==='play'&&info)return playList(info.list,info.i,undefined,playKind());
@@ -471,6 +538,13 @@ function boot(){
 	});
 	library.addEventListener('click',function(e){
 		var info=rowInfo(e.target);if(!info||e.target.closest('button'))return;
+		if(e.metaKey||e.ctrlKey){
+			var id=info.track.sourceID;
+			if(V.picked[id])delete V.picked[id];else V.picked[id]=1;
+			library.querySelectorAll('.tr[data-source="'+id+'"]').forEach(function(r){r.classList.toggle('picked',!!V.picked[id])});
+			paintPick();
+			return;
+		}
 		V.selected=info.track.sourceID;
 		library.querySelectorAll('.tr.selected').forEach(function(r){r.classList.remove('selected')});
 		info.row.classList.add('selected');

@@ -4,7 +4,7 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width,initial-scale=1">
 	<title>音乐</title>
-	<link rel="stylesheet" href="<?php echo $this->pluginHost; ?>static/style.css?v=0.5.0">
+	<link rel="stylesheet" href="<?php echo $this->pluginHost; ?>static/style.css?v=0.5.5">
 </head>
 <body>
 	<div class="app" id="app">
@@ -28,7 +28,7 @@
 			</nav>
 			<div class="nav-foot">
 				<button id="scan" class="scan" type="button"></button>
-				<p class="note" id="scan-note">只索引当前账号可读取的文件</p>
+				<p class="note" id="scan-note">只收录自己的文件</p>
 			</div>
 		</aside>
 		<div class="nav-mask" id="nav-mask"></div>
@@ -131,7 +131,7 @@
 		<div id="toast" class="toast hidden" role="status"></div>
 		<input id="lyric-file" type="file" accept=".lrc,.lrcx,.txt,.srt,.vtt,.ass,.ssa,.ttml,.xml,.json,.yrc" hidden>
 	</div>
-	<script src="<?php echo $this->pluginHost; ?>static/engine.js?v=0.5.0"></script>
-	<script src="<?php echo $this->pluginHost; ?>static/page.js?v=0.5.0"></script>
+	<script src="<?php echo $this->pluginHost; ?>static/engine.js?v=0.5.5"></script>
+	<script src="<?php echo $this->pluginHost; ?>static/page.js?v=0.5.5"></script>
 </body>
 </html>

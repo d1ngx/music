@@ -4,7 +4,7 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width,initial-scale=1">
 	<title>音乐</title>
-	<link rel="stylesheet" href="<?php echo $this->pluginHost; ?>static/style.css?v=0.5.6">
+	<link rel="stylesheet" href="<?php echo $this->pluginHost; ?>static/style.css?v=0.5.6.21">
 </head>
 <body>
 	<div class="app" id="app">
@@ -37,6 +37,8 @@
 				<button id="nav-toggle" class="ghost" type="button" title="侧栏"></button>
 				<button id="back" class="ghost hidden" type="button" title="返回"></button>
 				<h1 id="heading">主页</h1>
+				<span id="top-meta" class="top-meta"></span>
+				<div id="top-acts" class="top-acts"></div>
 				<label class="filter"><input id="page-search" type="search" placeholder="在此页中查找" autocomplete="off" spellcheck="false"></label>
 			</header>
 			<div id="library" class="library" tabindex="-1"><div class="empty">正在加载…</div></div>
@@ -73,14 +75,18 @@
 				</div>
 			</div>
 			<div class="dock-end">
-				<button id="fav" class="tb sm" type="button" title="喜爱"></button>
-				<button id="dock-lyrics" class="tb sm" type="button" title="歌词"></button>
-				<button id="dock-queue" class="tb sm" type="button" title="待播列表"></button>
-				<div class="vol" id="dock-vol">
+				<span class="dock-g">
+					<button id="fav" class="tb sm" type="button" title="喜爱"></button>
+					<button id="more" class="tb sm" type="button" title="更多"></button>
+				</span>
+				<span class="dock-g">
+					<button id="dock-lyrics" class="tb sm" type="button" title="歌词"></button>
+					<button id="dock-queue" class="tb sm" type="button" title="待播列表"></button>
+				</span>
+				<span class="dock-g vol" id="dock-vol">
 					<button id="mute" class="tb sm" type="button" title="静音"></button>
 					<div class="bar vbar" role="slider" aria-label="音量" tabindex="0"><i></i><b></b></div>
-				</div>
-				<button id="more" class="tb sm" type="button" title="更多"></button>
+				</span>
 			</div>
 		</footer>
 		<section id="now" class="now hidden" aria-label="正在播放">
@@ -131,7 +137,7 @@
 		<div id="toast" class="toast hidden" role="status"></div>
 		<input id="lyric-file" type="file" accept=".lrc,.lrcx,.txt,.srt,.vtt,.ass,.ssa,.ttml,.xml,.json,.yrc" hidden>
 	</div>
-	<script src="<?php echo $this->pluginHost; ?>static/engine.js?v=0.5.6"></script>
-	<script src="<?php echo $this->pluginHost; ?>static/page.js?v=0.5.6"></script>
+	<script src="<?php echo $this->pluginHost; ?>static/engine.js?v=0.5.6.21"></script>
+	<script src="<?php echo $this->pluginHost; ?>static/page.js?v=0.5.6.21"></script>
 </body>
 </html>

@@ -74,6 +74,15 @@ check('a new file is stored even when the read fails', $call('indexKeepsMetadata
 check('a cover requested by someone is cached for that person', $call('coverUser', array('targetID' => 4), 9) === 9);
 check('a scan with no viewer caches the cover for the file owner', $call('coverUser', array('targetID' => 4), 0) === 4);
 
+$stale = $call('missingTrackColumns', array('id', 'title', 'artist', 'album'));
+check('a field cache from before favorite still needs those columns', $stale === array('lyricOffset', 'favorite'));
+check('a current schema does not ask to add favorite again', $call('missingTrackColumns', array('id', 'lyricOffset', 'favorite')) === array());
+$kept = $call('keepTrackUserFlags', array('title' => 'A'), array('favorite' => 1, 'lyricOffset' => 200));
+check('a later scan keeps favorite and lyric offset already stored', $kept['favorite'] === 1 && $kept['lyricOffset'] === 200);
+$staleRow = $call('keepTrackUserFlags', array('title' => 'A'), array('id' => 1, 'title' => 'A'));
+check('a stale row without those keys does not write zeros', !isset($staleRow['favorite']) && !isset($staleRow['lyricOffset']));
+check('a new file does not inherit favorite flags', $call('keepTrackUserFlags', array('title' => 'A'), null) === array('title' => 'A'));
+
 $row = $call('rowKeys', array('sourceid' => 9, 'targetid' => 7, 'userid' => 7, 'filetype' => 'mp3', 'modifytime' => 12));
 check('driver column names map back to the indexer', $row['sourceID'] === 9 && $row['targetID'] === 7 && $row['userID'] === 7 && $row['fileType'] === 'mp3' && $row['modifyTime'] === 12);
 

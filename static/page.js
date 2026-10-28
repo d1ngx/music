@@ -1,9 +1,24 @@
 (function(){
-	var waitKM=null;
-	try{if(window.parent!==window&&window.parent.KodMusic)waitKM=window.parent.KodMusic}catch(e){}
-	if(waitKM&&!waitKM.engine){
-		var tries=0,timer=setInterval(function(){if(waitKM.engine||++tries>80){clearInterval(timer);boot()}},50);
-	}else boot();
+	function start(){
+		try{boot()}catch(e){
+			var el=document.getElementById('library');
+			if(el)el.innerHTML='<div class="empty"><p>页面无法打开</p></div>';
+		}
+	}
+	var waitKM=null,hasEngine=false;
+	try{
+		if(window.parent!==window&&window.parent.KodMusic){
+			waitKM=window.parent.KodMusic;
+			hasEngine=!!waitKM.engine;
+		}
+	}catch(e){}
+	if(waitKM&&!hasEngine){
+		var tries=0,timer=setInterval(function(){
+			var ready=false;
+			try{ready=!!waitKM.engine}catch(e){}
+			if(ready||++tries>80){clearInterval(timer);start()}
+		},50);
+	}else start();
 function boot(){
 	var K=window.KodMusicEngine,host=null;
 	try{if(window.parent!==window&&window.parent.KodMusic&&window.parent.KodMusic.engine)host=window.parent}catch(e){host=null}
@@ -96,6 +111,20 @@ function boot(){
 	});
 
 	/* ---------- data ---------- */
+	function syncEngineFromLibrary(){
+		var seen={};
+		(S.entries||[]).concat(S.past||[]).forEach(function(e){
+			var t=e&&e.track,lib=t&&V.bySource[t.sourceID];
+			if(!t||seen[t.sourceID])return;
+			seen[t.sourceID]=1;
+			if(!lib)return;
+			t.albumKnown=lib.albumKnown;
+			if(lib.lyricOffset!=null)t.lyricOffset=lib.lyricOffset;
+			var fav=lib.favorite?1:0;
+			if((t.favorite?1:0)===fav)return;
+			E.setFavorite(t,!!fav).catch(function(){});
+		});
+	}
 	function load(){
 		return api('collection').then(function(d){
 			V.albums=d.albums||[];
@@ -104,7 +133,9 @@ function boot(){
 			if(V.detail&&V.detail.builtin)V.detail.tracks=allTracks();
 			V.loaded=true;
 			ensureDefaultQueue();
+			syncEngineFromLibrary();
 			render();
+			paintPlayer();
 		}).catch(function(e){library.innerHTML=emptyHtml(e.message,'refresh','重试','reload')});
 	}
 	function loadLists(){
@@ -163,15 +194,19 @@ function boot(){
 		else if(d&&d.type==='artist')html=artistPage(d);
 		else if(d&&d.type==='list')html=listPage(d);
 		else html=({home:homePage,recent:recentPage,artists:artistsPage,albums:albumsPage,tracks:tracksPage,favorites:favPage,lists:listsPage,search:searchPage}[V.view]||homePage)();
+		var top=!d&&V.view==='tracks'?V.top:null;V.top=null;
+		$('top-meta').textContent=top?top.meta:'';
+		$('top-acts').innerHTML=top?top.acts:'';
 		library.innerHTML=pickBar()+html;
 		if(!d)$('heading').textContent=NAMES[V.view]||'音乐';
+		$('page-search').closest('.filter').classList.toggle('hidden', V.view==='search'&&!d);
 		observeMore();
 	}
 	function head(opts){
 		return '<header class="hero'+(opts.round?' round':'')+'">'+
 			'<div class="hero-art">'+(opts.cover?'<img src="'+esc(opts.cover)+'" alt="">':'<span class="tile-ic">'+icon(opts.icon||'note')+'</span>')+'</div>'+
 			'<div class="hero-text"><small>'+esc(opts.kind)+'</small><h2>'+esc(opts.title)+'</h2>'+(opts.sub?'<p class="hero-sub">'+opts.sub+'</p>':'')+'<p class="hero-meta">'+esc(opts.meta||'')+'</p>'+
-			'<div class="hero-btns"><button type="button" class="btn primary" data-cmd="play-all"'+(opts.count?'':' disabled')+'>'+icon('play')+'播放</button><button type="button" class="btn" data-cmd="shuffle-all"'+(opts.count?'':' disabled')+'>'+icon('shuffle')+'随机播放</button>'+(opts.more?'<button type="button" class="btn round" data-cmd="'+opts.more+'" title="更多">'+icon('more')+'</button>':'')+'</div></div>'+
+			'<div class="hero-btns"><button type="button" class="btn primary" data-cmd="play-all"'+(opts.count?'':' disabled')+'>'+icon('play')+'播放</button>'+(opts.count>1?'<button type="button" class="btn" data-cmd="shuffle-all">'+icon('shuffle')+'随机播放</button>':'')+(opts.more?'<button type="button" class="btn round" data-cmd="'+opts.more+'" title="更多">'+icon('more')+'</button>':'')+'</div></div>'+
 		'</header>';
 	}
 	function ctx(list){V.ctx.push(list);return V.ctx.length-1}
@@ -186,7 +221,7 @@ function boot(){
 		var cls='tl'+(opts.album?' no-album':'')+(opts.trackNo?' numbered':'')+(opts.list?' reorder':'');
 		var th=function(key,label,c){return '<span class="'+c+(opts.sortable?' sortable':'')+(V.sort.key===key?' sorted'+(V.sort.dir<0?' desc':''):'')+'"'+(opts.sortable?' data-sort="'+key+'"':'')+'>'+label+'</span>'};
 		return '<div class="'+cls+'" data-ctx="'+id+'"'+(opts.list?' data-list-id="'+opts.list+'"':'')+'>'+
-			'<div class="tl-head"><span class="c-n">#</span>'+th('title','标题','c-t')+th('artist','艺人','c-a')+(opts.album?'':th('album','专辑','c-b'))+th('duration',icon('time'),'c-d')+'<span class="c-x"></span></div>'+
+			'<div class="tl-head"><span class="c-n">#</span>'+th('title','标题','c-t')+th('duration','时长','c-d')+th('artist','艺人','c-a')+(opts.album?'':th('album','专辑','c-b'))+'</div>'+
 			rows(list,0,CHUNK,opts)+
 			(list.length>CHUNK?'<div class="tl-more" data-from="'+CHUNK+'"></div>':'')+
 		'</div>';
@@ -197,11 +232,11 @@ function boot(){
 			var t=list[i],on=t.sourceID===cur;
 			html+='<div class="tr'+(on?' playing':'')+(V.selected===t.sourceID?' selected':'')+(V.picked[t.sourceID]?' picked':'')+'" data-i="'+i+'" data-source="'+t.sourceID+'"'+(opts&&opts.list?' draggable="true"':'')+'>'+
 				'<span class="c-n"><em>'+(opts&&opts.trackNo?(t.trackNo||'·'):(i+1))+'</em><button type="button" class="rp" data-act="play" title="播放">'+icon('play')+'</button><i class="eq"><b></b><b></b><b></b></i></span>'+
-				'<span class="c-t">'+(opts&&opts.trackNo?'':'<img loading="lazy" alt="" src="'+esc(t.cover||'')+'">')+'<span class="tt"><strong>'+esc(t.title)+(t.isVideo?' <em class="tag">视频</em>':'')+'</strong><small>'+esc(t.artist)+'</small></span></span>'+
-				'<span class="c-a"><button type="button" class="link" data-artist="'+esc(t.artist)+'">'+esc(t.artist)+'</button></span>'+
-				(opts&&opts.album?'':'<span class="c-b"><button type="button" class="link" data-album="'+esc(t.albumKey||'')+'">'+esc(t.album)+'</button></span>')+
+				'<span class="c-t">'+(opts&&opts.trackNo?'':'<img loading="lazy" alt="" src="'+esc(t.cover||'')+'">')+'<span class="tt"><strong>'+esc(t.title)+(t.isVideo?' <em class="tag">视频</em>':'')+'</strong><small>'+esc(t.artist)+'</small></span>'+
+				'<span class="c-x"><button type="button" class="hf'+(t.favorite?' on':'')+'" data-act="fav" title="'+(t.favorite?'取消喜爱':'喜爱')+'">'+icon(t.favorite?'heartFill':'heart')+'</button><button type="button" class="mo" data-act="more" title="更多">'+icon('more')+'</button></span></span>'+
 				'<span class="c-d">'+(t.duration?fmt(t.duration):'')+'</span>'+
-				'<span class="c-x"><button type="button" class="hf'+(t.favorite?' on':'')+'" data-act="fav" title="'+(t.favorite?'取消喜爱':'喜爱')+'">'+icon(t.favorite?'heartFill':'heart')+'</button><button type="button" class="mo" data-act="more" title="更多">'+icon('more')+'</button></span>'+
+				'<span class="c-a"><button type="button" class="link" data-artist="'+esc(t.artist)+'">'+esc(t.artist)+'</button></span>'+
+				(opts&&opts.album?'':'<span class="c-b">'+(t.albumKnown==1?'<button type="button" class="link" data-album="'+esc(t.albumKey||'')+'">'+esc(t.album)+'</button>':'')+'</span>')+
 			'</div>';
 		}
 		return html;
@@ -221,8 +256,14 @@ function boot(){
 		},{root:library,rootMargin:'600px'});
 		nodes.forEach(function(n){moreObs.observe(n)});
 	}
+	function cardName(a){
+		if(a.albumKnown==1)return a.album;
+		var n=(a.tracks||[]).length;
+		return n===1?a.tracks[0].title:(n?a.tracks[0].title+' 等 '+n+' 首':a.album);
+	}
 	function card(a){
-		return '<article class="card" data-album="'+esc(a.key)+'"><div class="art"><img loading="lazy" alt="" src="'+esc(a.cover)+'"><div class="art-ov"><button type="button" class="art-play" data-act="play-album" title="播放">'+icon('play')+'</button><button type="button" class="art-more" data-act="album-more" title="更多">'+icon('more')+'</button></div></div><strong title="'+esc(a.album)+'">'+esc(a.album)+'</strong><small>'+esc(a.artist)+'</small></article>';
+		var name=cardName(a);
+		return '<article class="card" data-album="'+esc(a.key)+'"><div class="art"><img loading="lazy" alt="" src="'+esc(a.cover)+'"><div class="art-ov"><button type="button" class="art-play" data-act="play-album" title="播放">'+icon('play')+'</button><button type="button" class="art-more" data-act="album-more" title="更多">'+icon('more')+'</button></div></div><strong title="'+esc(name)+'">'+esc(name)+'</strong><small>'+esc(a.artist)+'</small></article>';
 	}
 	function artistCard(a){
 		return '<article class="card artist" data-artist="'+esc(a.name)+'"><div class="art"><img loading="lazy" alt="" src="'+esc(a.cover)+'"></div><strong>'+esc(a.name)+'</strong><small>'+a.count+' 首歌曲</small></article>';
@@ -233,56 +274,89 @@ function boot(){
 	function section(title,body,cmd){return '<section class="sec"><div class="sec-head"><h2>'+esc(title)+'</h2>'+(cmd?'<button type="button" class="link more" data-cmd="'+cmd+'">查看全部'+icon('right')+'</button>':'')+'</div>'+body+'</section>'}
 	function shelf(items){return '<div class="shelf">'+items.join('')+'</div>'}
 	function grid(items){return '<div class="grid">'+items.join('')+'</div>'}
-	function albumMatches(){var q=V.pageQ.toLowerCase();return V.albums.filter(function(a){return !q||(a.album+' '+a.artist).toLowerCase().indexOf(q)>=0})}
+	function albumMatches(){
+		var q=V.pageQ.toLowerCase();
+		return V.albums.filter(function(a){
+			if(!q)return true;
+			if((cardName(a)+' '+a.artist).toLowerCase().indexOf(q)>=0)return true;
+			return (a.tracks||[]).some(function(t){return (t.title||'').toLowerCase().indexOf(q)>=0});
+		});
+	}
+	function namedAlbums(){return albumMatches().filter(function(a){return a.albumKnown==1})}
+	function singleGroups(){return albumMatches().filter(function(a){return a.albumKnown!=1})}
+	function artistParts(raw){
+		return String(raw||'').split(/\s*(?:,|;|\/|&+| feat\.? | ft\.? | featuring )\s*/i).map(function(s){return s.trim()}).filter(Boolean);
+	}
+	function trackHasArtist(t,name){return t.artist===name||artistParts(t.artist).indexOf(name)>=0}
 	function artists(){
 		var map={},q=V.pageQ.toLowerCase();
-		V.tracks.forEach(function(t){var a=map[t.artist]||(map[t.artist]={name:t.artist,cover:t.cover,count:0});a.count++});
+		V.tracks.forEach(function(t){
+			var names=artistParts(t.artist);
+			if(!names.length)names=[t.artist];
+			names.forEach(function(name){var a=map[name]||(map[name]={name:name,cover:t.cover,count:0});a.count++});
+		});
 		return Object.keys(map).sort(function(a,b){return a.localeCompare(b,'zh')}).map(function(k){return map[k]}).filter(function(a){return !q||a.name.toLowerCase().indexOf(q)>=0});
 	}
 	function homePage(){
 		if(!V.tracks.length)return emptyHtml('资料库还是空的。扫描当前账号可读取的音乐，或在文件管理里用「音乐」打开。','note','扫描资料库','scan');
+		var q=V.pageQ.toLowerCase();
+		var hitAlbum=function(a){return !q||(cardName(a)+' '+a.artist).toLowerCase().indexOf(q)>=0||(a.tracks||[]).some(function(t){return (t.title||'').toLowerCase().indexOf(q)>=0})};
 		var recent=E.recent().map(track).filter(Boolean),seen={},played=[];
-		recent.forEach(function(t){var a=V.albums.filter(function(x){return x.key===t.albumKey})[0];if(a&&!seen[a.key]){seen[a.key]=1;played.push(a)}});
-		var added=V.albums.slice().sort(function(a,b){return (b.added||0)-(a.added||0)}).slice(0,12);
-		var fav=V.tracks.filter(function(t){return t.favorite});
+		recent.forEach(function(t){var a=V.albums.filter(function(x){return x.key===t.albumKey})[0];if(a&&!seen[a.key]&&hitAlbum(a)){seen[a.key]=1;played.push(a)}});
+		var added=V.albums.filter(hitAlbum).slice().sort(function(a,b){return (b.added||0)-(a.added||0)}).slice(0,12);
+		var fav=V.tracks.filter(function(t){return t.favorite&&(!q||match(t,q))});
+		var lists=V.lists.filter(function(l){return !q||String(l.name||'').toLowerCase().indexOf(q)>=0});
 		var html='';
 		if(played.length)html+=section('最近播放',shelf(played.slice(0,12).map(card)));
-		html+=section('最近添加',shelf(added.map(card)),'recent');
-		if(fav.length)html+=section('喜爱的歌曲',table(fav.slice(0,8)),'favorites');
-		if(V.tracks.length||V.lists.length)html+=section('播放列表',shelf([listCard({id:'all',name:'全部歌曲',count:V.tracks.length})].concat(V.lists.slice(0,11).map(listCard))),'lists');
-		return html;
+		if(added.length)html+=section('最近添加',shelf(added.map(card)),V.albums.length>12?'recent':'');
+		if(fav.length)html+=section('喜爱的歌曲',table(fav.slice(0,8),{album:true}),fav.length>8?'favorites':'');
+		if(lists.length)html+=section('播放列表',shelf(lists.slice(0,12).map(listCard)),V.lists.length>12?'lists':'');
+		return html||emptyHtml(q?'没有找到「'+V.pageQ+'」':'资料库还是空的。','search');
 	}
 	function recentPage(){
 		var seg='<div class="seg in-page"><button type="button" data-recent="albums" class="'+(V.recentMode==='albums'?'on':'')+'">专辑</button><button type="button" data-recent="songs" class="'+(V.recentMode==='songs'?'on':'')+'">歌曲</button></div>';
 		if(V.recentMode==='albums'){
-			var list=albumMatches().slice().sort(function(a,b){return (b.added||0)-(a.added||0)});
+			var list=namedAlbums().slice().sort(function(a,b){return (b.added||0)-(a.added||0)});
 			return seg+(list.length?grid(list.map(card)):emptyHtml('没有最近添加的专辑'));
 		}
 		return seg+table(pageFilter(V.tracks).slice().sort(function(a,b){return (b.createTime||0)-(a.createTime||0)}));
 	}
 	function artistsPage(){var list=artists();return list.length?grid(list.map(artistCard)):emptyHtml('没有艺人','mic')}
-	function albumsPage(){var list=albumMatches();return list.length?grid(list.map(card)):emptyHtml('没有专辑','album')}
+	function albumsPage(){
+		var named=namedAlbums(),singles=singleGroups();
+		if(!named.length&&!singles.length)return emptyHtml('没有专辑','album');
+		var html='';
+		if(named.length)html+=grid(named.map(card));
+		if(singles.length)html+=section('单曲',grid(singles.map(card)));
+		return html;
+	}
 	function tracksPage(){
 		var list=pageFilter(V.tracks);
 		var videos=list.some(function(t){return t.isVideo});
-		return '<div class="bar-actions"><span class="note">'+list.length+' 首歌曲 · '+minutes(total(list))+'</span><span class="spacer"></span>'+(videos?'<button type="button" class="btn" data-cmd="drop-videos">移除视频</button>':'')+'<button type="button" class="btn primary" data-cmd="play-all"'+(list.length?'':' disabled')+'>'+icon('play')+'播放</button><button type="button" class="btn" data-cmd="shuffle-all"'+(list.length?'':' disabled')+'>'+icon('shuffle')+'随机播放</button></div>'+table(list,{sortable:true});
+		V.top={meta:list.length+' 首歌曲 · '+minutes(total(list)),acts:(videos?'<button type="button" class="btn" data-cmd="drop-videos">移除视频</button>':'')+'<button type="button" class="btn primary" data-cmd="play-all"'+(list.length?'':' disabled')+'>'+icon('play')+'播放</button>'+(list.length>1?'<button type="button" class="btn" data-cmd="shuffle-all">'+icon('shuffle')+'随机播放</button>':'')};
+		return table(list,{sortable:true});
 	}
 	function favPage(){
 		var list=pageFilter(V.tracks.filter(function(t){return t.favorite}));
 		return head({kind:'资料库',title:'喜爱的歌曲',icon:'heartFill',meta:list.length+' 首歌曲 · '+minutes(total(list)),count:list.length})+table(list,{empty:'在歌曲上点按爱心，就会出现在这里',sortable:true});
 	}
 	function listsPage(){
-		return '<div class="grid">'+listCard({id:'all',name:'全部歌曲',count:V.tracks.length})+'<article class="card" data-cmd="list-new"><div class="art tile add"><span class="tile-ic">'+icon('plus')+'</span></div><strong>新建播放列表</strong><small>&nbsp;</small></article>'+V.lists.map(listCard).join('')+'</div>';
+		var q=V.pageQ.toLowerCase();
+		var lists=V.lists.filter(function(l){return !q||String(l.name||'').toLowerCase().indexOf(q)>=0});
+		var all=!q||'全部歌曲'.indexOf(q)>=0;
+		return '<div class="grid">'+(all?listCard({id:'all',name:'全部歌曲',count:V.tracks.length}):'')+'<article class="card" data-cmd="list-new"><div class="art tile add"><span class="tile-ic">'+icon('plus')+'</span></div><strong>新建播放列表</strong><small>&nbsp;</small></article>'+lists.map(listCard).join('')+'</div>';
 	}
 	function searchPage(){
 		var q=V.q.toLowerCase(),songs=V.tracks.filter(function(t){return match(t,q)});
-		var al=V.albums.filter(function(a){return (a.album+' '+a.artist).toLowerCase().indexOf(q)>=0});
+		var named=V.albums.filter(function(a){return a.albumKnown==1&&(a.album+' '+a.artist).toLowerCase().indexOf(q)>=0});
+		var singles=V.albums.filter(function(a){return a.albumKnown!=1&&((a.tracks[0]&&a.tracks[0].title||'')+' '+a.artist).toLowerCase().indexOf(q)>=0});
 		var ar=artists().filter(function(a){return a.name.toLowerCase().indexOf(q)>=0});
 		$('heading').textContent='“'+V.q+'”';
-		if(!songs.length&&!al.length&&!ar.length)return emptyHtml('没有找到「'+V.q+'」','search');
+		if(!songs.length&&!named.length&&!singles.length&&!ar.length)return emptyHtml('没有找到「'+V.q+'」','search');
 		var html='';
 		if(ar.length)html+=section('艺人',shelf(ar.slice(0,12).map(artistCard)));
-		if(al.length)html+=section('专辑',shelf(al.slice(0,12).map(card)));
+		if(named.length)html+=section('专辑',shelf(named.slice(0,12).map(card)));
+		if(singles.length)html+=section('单曲',shelf(singles.slice(0,12).map(card)));
 		if(songs.length)html+=section('歌曲',table(songs.slice(0,300)));
 		return html;
 	}
@@ -290,14 +364,15 @@ function boot(){
 	function albumPage(d){
 		var a=V.albums.filter(function(x){return x.key===d.key})[0];
 		if(!a)return emptyHtml('专辑已不在资料库中','album');
-		$('heading').textContent=a.album;
+		var name=cardName(a);
+		$('heading').textContent=name;
 		var list=pageFilter(a.tracks);
-		return head({kind:'专辑',title:a.album,cover:a.cover,sub:'<button type="button" class="link" data-artist="'+esc(a.artist)+'">'+esc(a.artist)+'</button>',meta:[a.year,a.tracks.length+' 首歌曲',minutes(total(a.tracks))].filter(Boolean).join(' · '),count:list.length,more:'album-more'})+table(list,{album:true,trackNo:true});
+		return head({kind:a.albumKnown==1?'专辑':'单曲',title:name,cover:a.cover,sub:'<button type="button" class="link" data-artist="'+esc(a.artist)+'">'+esc(a.artist)+'</button>',meta:[a.year,a.tracks.length+' 首歌曲',minutes(total(a.tracks))].filter(Boolean).join(' · '),count:list.length,more:'album-more'})+table(list,{album:true,trackNo:true});
 	}
 	function artistPage(d){
 		$('heading').textContent=d.name;
-		var list=pageFilter(V.tracks.filter(function(t){return t.artist===d.name}));
-		var al=V.albums.filter(function(a){return a.artist===d.name});
+		var list=pageFilter(V.tracks.filter(function(t){return trackHasArtist(t,d.name)}));
+		var al=V.albums.filter(function(a){return a.albumKnown==1&&(a.artist===d.name||(a.tracks||[]).some(function(t){return trackHasArtist(t,d.name)}))});
 		return head({kind:'艺人',title:d.name,cover:al[0]&&al[0].cover,round:true,meta:al.length+' 张专辑 · '+list.length+' 首歌曲',count:list.length})+
 			(al.length?section('专辑',shelf(al.map(card))):'')+section('歌曲',table(list));
 	}
@@ -323,6 +398,13 @@ function boot(){
 	}
 
 	/* ---------- actions ---------- */
+	function enqueue(tracks,atEnd){
+		var r=E.insert(tracks,!!atEnd);
+		if(r==='play')toast('开始播放');
+		else if(r==='same')toast('这首正在播放');
+		else if(r==='end')toast('已放到待播列表末尾');
+		else if(r==='next')toast('将在下一首播放');
+	}
 	function playList(list,start,shuffle,kind){
 		if(!list||!list.length)return;
 		var opts={kind:kind||'custom'};if(typeof shuffle==='boolean')opts.shuffle=shuffle;
@@ -360,11 +442,25 @@ function boot(){
 			return [{label:'新建播放列表…',icon:'plus',act:function(){newList(t)}}].concat(lists.length?[{sep:1}]:[]).concat(lists.map(function(l){return {label:l.name,icon:'list',hint:String(l.count),act:function(){addToList(t,l.id)}}}));
 		});
 	}
+	function explorerWin(){
+		try{if(host)return host}catch(e){}
+		try{if(window.parent&&window.parent!==window)return window.parent}catch(e){}
+		return window.top||window;
+	}
 	function locate(t){
 		if(!t||!t.sourceID){toast('没有可定位的文件');return}
+		var w=explorerWin();
+		try{if(w.KodMusic&&typeof w.KodMusic.locateFile==='function'){w.KodMusic.locateFile(t);return}}catch(e){}
+		var path=t.path?String(t.path).replace(/\/+$/,''):('{source:'+t.sourceID+'}');
 		try{
-			var w=host||window.top;
-			w.location.hash='explorer&sidf='+t.sourceID;
+			w.Function('path',
+				'try{if(window.Router)Router.go("explorer");else location.hash="explorer"}catch(e){}'+
+				'var n=0,done=false,timer=0;'+
+				'function app(){var $=window.jQuery||window.$;var a=$&&$("#app [app-explorer=1]").data("appExplorer");return a&&a.pathAction&&a.pathAction.openFatherSelect?a:null}'+
+				'function count(a){var c=0;try{var fl=a.select&&a.select.fileLight;if(fl&&fl.listAllEach)fl.listAllEach(function(){c++})}catch(e){}return c}'+
+				'function tick(){if(done){if(timer)clearInterval(timer);return}n++;if((location.hash||"").indexOf("explorer")<0&&n<25)return;var a=app();if(!a){if(n>50&&timer)clearInterval(timer);return}if(!count(a)&&n<15)return;done=true;if(timer)clearInterval(timer);var light=a.select&&a.select.fileLight;if(light&&light.selectByPath&&light.selectByPath(path,true))return;a.pathAction.openFatherSelect(path,false)}'+
+				'tick();if(!done)timer=setInterval(tick,40);'
+			)(path);
 		}catch(e){toast('无法切换到文件管理')}
 	}
 	function trackMenu(at,t,list,extra){
@@ -372,8 +468,8 @@ function boot(){
 		var isCur=t.sourceID===curId();
 		var items=[];
 		if(!isCur)items.push({label:'播放',icon:'play',act:function(){var i=list?list.indexOf(t):-1;if(list&&i>=0)playList(list,i);else E.playNow(t)}});
-		items.push({label:'下一首播放',icon:'queue',act:function(){E.insert([t],false);toast('将在下一首播放')}});
-		items.push({label:'稍后播放',icon:'list',act:function(){E.insert([t],true);toast('已添加到待播列表末尾')}});
+		items.push({label:'下一首播放',icon:'queue',act:function(){enqueue([t],false)}});
+		items.push({label:'稍后播放',icon:'list',act:function(){enqueue([t],true)}});
 		items.push({sep:1});
 		items.push({label:'添加到播放列表',icon:'plus',sub:function(){return listSub(t)},disabled:t.transient?'先扫描进资料库':''});
 		var picked=Object.keys(V.picked).map(function(id){return +id});
@@ -487,21 +583,21 @@ function boot(){
 	function listMenu(at,d){
 		openMenu(at,[
 			{label:'重命名…',icon:'list',act:function(){ask('重命名播放列表',d.name,'保存').then(function(name){if(!name||name===d.name)return;api('playlistRename',{id:d.id,name:name},true).then(function(){d.name=name;render();loadLists()}).catch(function(e){toast(e.message)})})}},
-			{label:'稍后播放全部',icon:'queue',act:function(){if(d.tracks&&d.tracks.length){E.insert(d.tracks,true);toast('已添加到待播列表')}},disabled:d.tracks&&d.tracks.length?'':'列表为空'},
+			{label:'稍后播放全部',icon:'queue',act:function(){if(d.tracks&&d.tracks.length)enqueue(d.tracks,true)},disabled:d.tracks&&d.tracks.length?'':'列表为空'},
 			{sep:1},
 			{label:'删除播放列表',icon:'trash',danger:1,act:function(){confirmBox('删除「'+d.name+'」？','只删除播放列表，原来的文件不会被删除。','删除',true).then(function(ok){if(!ok)return;api('playlistRemove',{id:d.id},true).then(function(){toast('已删除');loadLists();V.stack=[];go('lists')}).catch(function(e){toast(e.message)})})}}
 		]);
 	}
 	function albumMenu(at,key){
 		var list=albumTracks(key);if(!list.length)return;
-		openMenu(at,[
-			{label:'播放',icon:'play',act:function(){playList(list,0,false)}},
-			{label:'随机播放',icon:'shuffle',act:function(){playList(list,-1,true)}},
-			{label:'下一首播放',icon:'queue',act:function(){E.insert(list,false);toast('将在下一首播放')}},
-			{label:'稍后播放',icon:'list',act:function(){E.insert(list,true);toast('已添加到待播列表末尾')}},
+		var items=[{label:'播放',icon:'play',act:function(){playList(list,0,false)}}];
+		if(list.length>1)items.push({label:'随机播放',icon:'shuffle',act:function(){playList(list,-1,true)}});
+		items.push({label:'下一首播放',icon:'queue',act:function(){enqueue(list,false)}});
+		items.push({label:'稍后播放',icon:'list',act:function(){enqueue(list,true)}});
+		openMenu(at,items.concat([
 			{sep:1},
 			{label:'前往艺人',icon:'mic',act:function(){open({type:'artist',name:list[0].artist})}}
-		]);
+		]));
 	}
 
 	/* ---------- library events ---------- */
@@ -619,13 +715,19 @@ function boot(){
 		document.body.classList.toggle('is-playing-page',E.playing());
 	}
 	var lastCover='';
+	function albumLine(t){
+		var lib=t&&V.bySource[t.sourceID];
+		var known=lib?lib.albumKnown==1:t&&t.albumKnown==1;
+		var name=lib&&lib.album||t&&t.album||'';
+		return known&&name?' — '+name:'';
+	}
 	function paintPlayer(){
 		var t=E.track();
 		$('dock').classList.toggle('empty',!t);
 		$('title').textContent=t?t.title:'未在播放';
-		$('meta').textContent=t?t.artist+(t.album?' — '+t.album:''):'选择一首歌开始播放';
+		$('meta').textContent=t?t.artist+albumLine(t):'选择一首歌开始播放';
 		$('now-title').textContent=t?t.title:'未在播放';
-		$('now-meta').textContent=t?t.artist+(t.album?' — '+t.album:''):'';
+		$('now-meta').textContent=t?t.artist+albumLine(t):'';
 		var cover=t&&t.cover?t.cover:'';
 		if(cover!==lastCover){
 			lastCover=cover;
@@ -782,6 +884,13 @@ function boot(){
 		var v=e.target.closest('.nav-item[data-view]');if(v){go(v.dataset.view);return}
 		var l=e.target.closest('[data-nav-list]');if(l){V.stack=[];V.view='lists';openList(l.dataset.navList);V.stack=[];paintNav();$('app').classList.remove('nav-open')}
 	});
+	$('top-acts').addEventListener('click',function(e){
+		var b=e.target.closest('[data-cmd]');if(!b||b.disabled)return;
+		var cmd=b.dataset.cmd;
+		if(cmd==='play-all')playList(detailTracks(),0,false,playKind());
+		else if(cmd==='shuffle-all')playList(detailTracks(),-1,true,playKind());
+		else if(cmd==='drop-videos')dropLibrary(null,true);
+	});
 	$('list-add').onclick=function(e){e.stopPropagation();newList()};
 	$('back').onclick=back;
 	$('nav-toggle').onclick=function(){var app=$('app');if(window.innerWidth<820)app.classList.toggle('nav-open');else{app.classList.toggle('nav-hide');writePref('nav-hide',app.classList.contains('nav-hide')?'1':'')}};
@@ -800,6 +909,7 @@ function boot(){
 		var btn=$('scan');if(btn.disabled)return;
 		btn.disabled=true;btn.classList.add('busy');btn.querySelector('span').textContent='正在扫描…';
 		api('scan',{},true).then(function(d){
+			$('scan-note').classList.add('shown');
 			$('scan-note').textContent='新增或更新 '+(d.processed||0)+' 首'+(d.skipped?'，跳过 '+d.skipped+' 个':'')+(d.more?'，还有更多，可再次扫描':'');
 			return load();
 		}).catch(function(e){toast(e.message)}).then(function(){btn.disabled=false;btn.classList.remove('busy');btn.querySelector('span').textContent='扫描资料库'});
@@ -874,6 +984,6 @@ function boot(){
 	requestAnimationFrame(videoLoop);
 	requestAnimationFrame(timeLoop);
 	if(S.blocked)toast('浏览器阻止了自动播放，点按播放键继续');
-	Promise.all([loadLists(),load()]).then(function(){if(V.view==='home'&&!V.detail)render();handleNav()});
+	Promise.all([loadLists(),load()]).then(function(){if(V.view==='home'&&!V.detail)render();paintPlayer();handleNav()});
 }
 })();

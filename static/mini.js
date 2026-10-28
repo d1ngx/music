@@ -154,13 +154,20 @@
 		}
 		applyLayout();paintModes();paintTime();
 	}
+	function loggedIn(){
+		try{return !!(window.G&&G.user&&G.user.userID)}catch(e){return false}
+	}
 	function visible(){
+		if(!loggedIn())return false;
 		if(!E.track())return false;
 		if(document.documentElement.classList.contains('kmusic-fs'))return false;
 		if(closedFor===S.token)return false;
 		return !E.uiVisible();
 	}
 	function paintVisibility(){
+		if(!loggedIn()){
+			try{var m=E.media();if(m&&!m.paused)m.pause()}catch(e){}
+		}
 		var v=visible();
 		if(v===shown)return;
 		shown=v;
@@ -220,7 +227,7 @@
 			{label:'在资料库中显示艺人',icon:'mic',act:function(){go({type:'artist',name:t.artist})}},
 			{sep:1},
 			{label:'拷贝',icon:'copy',act:function(){copy(t.title+' - '+t.artist+(t.album?' - '+t.album:''))}},
-			{label:'在文件管理中定位',icon:'folder',act:function(){closePop();location.hash='explorer&sidf='+t.sourceID}},
+			{label:'在文件管理中定位',icon:'folder',act:function(){closePop();locateFile(t)}},
 			{sep:1},
 			{label:pref.art?'隐藏大插图':'显示大插图',icon:'image',on:pref.art,disabled:t.isVideo?'视频始终显示画面':'',act:function(){pref.art=!pref.art;save();applyLayout();closePop()}},
 			{label:pref.panel==='queue'?'隐藏待播清单':'显示待播清单',icon:'list',on:pref.panel==='queue',act:function(){setPanel('queue');closePop()}},
@@ -314,6 +321,44 @@
 		try{if(window.Router&&typeof Router.go==='function'){Router.go('music');return}}catch(e){}
 		location.hash='music';
 	}
+	function explorerApp(){
+		var $=window.jQuery||window.$;
+		if($){
+			var app=$('#app [app-explorer="1"]').data('appExplorer');
+			if(app&&app.pathAction&&typeof app.pathAction.openFatherSelect==='function')return app;
+		}
+		return null;
+	}
+	function listingCount(app){
+		var n=0;
+		try{var fl=app.select&&app.select.fileLight;if(fl&&fl.listAllEach)fl.listAllEach(function(){n++})}catch(e){}
+		return n;
+	}
+	function locateFile(t){
+		var path=typeof t==='string'?t:(t&&t.path?String(t.path).replace(/\/+$/,''):(t&&t.sourceID?'{source:'+t.sourceID+'}':''));
+		if(!path)return;
+		try{
+			if(window.Router&&typeof Router.go==='function')Router.go('explorer');
+			else location.hash='explorer';
+		}catch(e){}
+		var n=0,done=false,timer=0;
+		var tick=function(){
+			if(done){if(timer)clearInterval(timer);return}
+			n++;
+			if((location.hash||'').indexOf('explorer')<0&&n<25)return;
+			var app=explorerApp();
+			if(!app){if(n>50&&timer)clearInterval(timer);return}
+			if(!listingCount(app)&&n<15)return;
+			done=true;
+			if(timer)clearInterval(timer);
+			var light=app.select&&app.select.fileLight;
+			if(light&&typeof light.selectByPath==='function'&&light.selectByPath(path,true))return;
+			app.pathAction.openFatherSelect(path,false);
+		};
+		tick();
+		if(!done)timer=setInterval(tick,40);
+	}
+	KM.locateFile=locateFile;
 	root.addEventListener('click',function(e){
 		var b=e.target.closest('[data-k]');if(!b)return;
 		var k=b.dataset.k;
@@ -347,6 +392,7 @@
 		if(pageVideo){try{if(pageVideo.win.closed||!pageVideo.win.frameElement||!pageVideo.win.frameElement.offsetParent){pageVideo=null;placeVideoNow()}}catch(e){pageVideo=null;placeVideoNow()}}
 		paintVisibility();
 	},400);
+	window.addEventListener('hashchange',paintVisibility);
 
 	KM.open=function(path){
 		E.openPath(path).catch(function(err){tips(err.message||'无法播放这个文件')});

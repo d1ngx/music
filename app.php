@@ -50,19 +50,49 @@ class musicPlugin extends PluginBase {
 				}
 			}
 		}
-		try {
-			$sql = stristr($GLOBALS['config']['database']['DB_TYPE'], 'sqlite')
-				? 'ALTER TABLE "plugin_music_track" ADD COLUMN "lyricOffset" integer NOT NULL DEFAULT 0'
-				: 'ALTER TABLE `plugin_music_track` ADD COLUMN `lyricOffset` int NOT NULL DEFAULT 0';
-			Model()->db()->execute($sql);
-		} catch (Throwable $e) {}
-		try {
-			$sql = stristr($GLOBALS['config']['database']['DB_TYPE'], 'sqlite')
-				? 'ALTER TABLE "plugin_music_track" ADD COLUMN "favorite" integer NOT NULL DEFAULT 0'
-				: 'ALTER TABLE `plugin_music_track` ADD COLUMN `favorite` tinyint NOT NULL DEFAULT 0';
-			Model()->db()->execute($sql);
-		} catch (Throwable $e) {}
+		$this->ensureTrackColumns();
 		return true;
+	}
+
+	// KodBox caches table columns. Adding favorite/lyricOffset without flush makes
+	// Model->save drop those fields, so a heart looks saved until the page reloads.
+	private function keepTrackUserFlags($data, $existing) {
+		if (!$existing) return $data;
+		foreach (array('favorite', 'lyricOffset') as $keep) {
+			if (array_key_exists($keep, $existing)) $data[$keep] = intval($existing[$keep]);
+		}
+		return $data;
+	}
+
+	private function extraTrackColumns() {
+		return array(
+			'lyricOffset' => array('sqlite' => 'integer NOT NULL DEFAULT 0', 'mysql' => 'int NOT NULL DEFAULT 0'),
+			'favorite' => array('sqlite' => 'integer NOT NULL DEFAULT 0', 'mysql' => 'tinyint NOT NULL DEFAULT 0'),
+		);
+	}
+
+	private function missingTrackColumns($fields) {
+		$missing = array();
+		foreach ($this->extraTrackColumns() as $col => $types) {
+			if (!is_array($fields) || !in_array($col, $fields, true)) $missing[] = $col;
+		}
+		return $missing;
+	}
+
+	private function ensureTrackColumns() {
+		$sqlite = stristr($GLOBALS['config']['database']['DB_TYPE'], 'sqlite');
+		$model = Model($this->tableName);
+		$missing = $this->missingTrackColumns($model->getDbFields());
+		if (!$missing) return;
+		foreach ($this->extraTrackColumns() as $col => $types) {
+			if (!in_array($col, $missing, true)) continue;
+			$type = $sqlite ? $types['sqlite'] : $types['mysql'];
+			$sql = $sqlite
+				? 'ALTER TABLE "'.$this->tableName.'" ADD COLUMN "'.$col.'" '.$type
+				: 'ALTER TABLE `'.$this->tableName.'` ADD COLUMN `'.$col.'` '.$type;
+			try { Model()->db()->execute($sql); } catch (Throwable $e) {}
+		}
+		try { $model->flush(); } catch (Throwable $e) {}
 	}
 
 	private function postAllowed() {
@@ -98,7 +128,7 @@ class musicPlugin extends PluginBase {
 			$key = $this->albumKey($artist, $album);
 			$cover = $this->signedUrl('cover', $row['sourceID']);
 			if (!isset($albums[$key])) {
-				$albums[$key] = array('key' => $key, 'artist' => $artist, 'album' => $album, 'year' => $row['year'], 'cover' => $cover, 'tracks' => array(), 'added' => intval($row['createTime']));
+				$albums[$key] = array('key' => $key, 'artist' => $artist, 'album' => $album, 'albumKnown' => $row['album'] !== '' ? 1 : 0, 'year' => $row['year'], 'cover' => $cover, 'tracks' => array(), 'added' => intval($row['createTime']));
 			} elseif ($albums[$key]['year'] === '' && $row['year'] !== '') $albums[$key]['year'] = $row['year'];
 			if (intval($row['createTime']) > intval($albums[$key]['added'])) $albums[$key]['added'] = intval($row['createTime']);
 			$albums[$key]['tracks'][] = $this->trackOut($row, $title, $artist, $album, $cover);
@@ -133,6 +163,7 @@ class musicPlugin extends PluginBase {
 	}
 
 	public function lyrics() {
+		$this->initTable();
 		$sourceID = intval(_get($this->in, 'sourceid', _get($this->in, 'sourceID', 0)));
 		if (!$sourceID) $sourceID = intval(Input::get('sourceid', 'require'));
 		$source = $this->assertTrack($sourceID);
@@ -164,6 +195,7 @@ class musicPlugin extends PluginBase {
 
 	public function lyricOffset() {
 		if (!$this->postAllowed()) return show_json(LNG('common.illegalRequest'), false);
+		$this->initTable();
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
 		$this->assertTrack($sourceID);
 		$offset = max(-15000, min(15000, intval(_get($this->in, 'offset', 0))));
@@ -174,6 +206,7 @@ class musicPlugin extends PluginBase {
 
 	public function lyricImport() {
 		if (!$this->postAllowed()) return show_json(LNG('common.illegalRequest'), false);
+		$this->initTable();
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
 		$this->assertTrack($sourceID);
 		$text = $this->lyricText(_get($this->in, 'text', ''));
@@ -194,6 +227,7 @@ class musicPlugin extends PluginBase {
 	// The copy under 音乐资料/歌词 is left untouched.
 	public function lyricRefresh() {
 		if (!$this->postAllowed()) return show_json(LNG('common.illegalRequest'), false);
+		$this->initTable();
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
 		$source = $this->assertTrack($sourceID);
 		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
@@ -473,6 +507,7 @@ class musicPlugin extends PluginBase {
 			'sourceModifyTime' => intval($source['modifyTime']),
 			'modifyTime' => time(),
 		));
+		$data = $this->keepTrackUserFlags($data, $existing);
 		$model = Model($this->tableName); $model->setDataAuto(false);
 		if ($existing) $model->where(array('id' => $existing['id']))->save($data);
 		else {
@@ -581,6 +616,7 @@ class musicPlugin extends PluginBase {
 
 	public function lyricSearch() {
 		if (!$this->postAllowed()) return show_json(LNG('common.illegalRequest'), false);
+		$this->initTable();
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
 		$source = $this->assertTrack($sourceID);
 		if (!$this->wordSourcesOn()) return show_json('插件设置里没有开启逐字歌词来源', false);
@@ -1336,6 +1372,7 @@ class musicPlugin extends PluginBase {
 
 	public function resolve() {
 		if (!KodUser::id()) return show_json(LNG('explorer.noPermissionAction'), false);
+		$this->initTable();
 		$path = trim((string)_get($this->in, 'path', ''));
 		if ($path === '') return show_json('缺少文件路径', false);
 		try { $info = IO::info($path); } catch (Throwable $e) { $info = null; }
@@ -1362,6 +1399,7 @@ class musicPlugin extends PluginBase {
 
 	public function favorite() {
 		if (!$this->postAllowed()) return show_json(LNG('common.illegalRequest'), false);
+		$this->initTable();
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
 		$this->assertTrack($sourceID);
 		$favorite = _get($this->in, 'favorite', 0) == 1 ? 1 : 0;
@@ -1376,6 +1414,7 @@ class musicPlugin extends PluginBase {
 			'title' => $title,
 			'artist' => $artist,
 			'album' => $album,
+			'albumKnown' => $row['album'] !== '' ? 1 : 0,
 			'trackNo' => intval($row['trackNo']),
 			'duration' => intval($row['duration']),
 			'year' => $row['year'],

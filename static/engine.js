@@ -3,7 +3,7 @@
 
 	var STROKE='fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
 	var ICONS={
-		play:'<path fill="currentColor" stroke="none" d="M8 5.14v13.72a1 1 0 0 0 1.52.85l10.6-6.86a1 1 0 0 0 0-1.7L9.52 4.29A1 1 0 0 0 8 5.14z"/>',
+		play:'<path fill="currentColor" stroke="none" d="M6 5.14v13.72a1 1 0 0 0 1.52.85l10.6-6.86a1 1 0 0 0 0-1.7L7.52 4.29A1 1 0 0 0 6 5.14z"/>',
 		pause:'<rect fill="currentColor" stroke="none" x="6" y="4.5" width="4" height="15" rx="1.2"/><rect fill="currentColor" stroke="none" x="14" y="4.5" width="4" height="15" rx="1.2"/>',
 		next:'<path fill="currentColor" stroke="none" d="M2.5 6.6v10.8a.9.9 0 0 0 1.4.75L11.5 13v4.4a.9.9 0 0 0 1.4.75l8.3-5.4a.9.9 0 0 0 0-1.5l-8.3-5.4a.9.9 0 0 0-1.4.75V11L3.9 5.85a.9.9 0 0 0-1.4.75z"/>',
 		prev:'<path fill="currentColor" stroke="none" d="M21.5 6.6v10.8a.9.9 0 0 1-1.4.75L12.5 13v4.4a.9.9 0 0 1-1.4.75l-8.3-5.4a.9.9 0 0 1 0-1.5l8.3-5.4a.9.9 0 0 1 1.4.75V11l7.6-5.15a.9.9 0 0 1 1.4.75z"/>',
@@ -351,21 +351,52 @@
 		E.toggleMute=function(){S.muted=!S.muted;if(!S.muted&&S.volume<=0.001)S.volume=.6;applyVolume();emit('volume');save()};
 		E.setShuffle=function(on){S.shuffle=!!on;buildOrder();emit('state');emit('queue');save()};
 		E.cycleRepeat=function(){S.repeat=S.repeat==='off'?'all':S.repeat==='all'?'one':'off';emit('state');save()};
+		// Move a song already waiting in the queue. Adding another copy makes it play twice.
 		E.insert=function(tracks,atEnd){
 			tracks=[].concat(tracks).filter(Boolean);
-			if(!tracks.length)return;
-			if(!E.current()){E.setQueue(tracks,0);return}
-			var items=tracks.map(function(t){return {entryId:S.seq++,track:plain(t)}});
-			var curId=E.current().entryId;
-			if(atEnd){S.entries=S.entries.concat(items);S.order=S.order.concat(items.map(function(e){return e.entryId}))}
-			else{
-				var pos=S.order.indexOf(curId)+1;
-				while(pos<S.order.length&&entryBy(S.order[pos])&&entryBy(S.order[pos]).queued)pos++;
-				items.forEach(function(e){e.queued=true});
-				S.entries=S.entries.concat(items);
-				Array.prototype.splice.apply(S.order,[pos,0].concat(items.map(function(e){return e.entryId})));
+			if(!tracks.length)return 'same';
+			if(!S.entries.length){
+				if(atEnd){E.stage(tracks);return 'end'}
+				E.setQueue(tracks,0);return 'play';
 			}
+			var cur=E.current(),curId=cur?cur.entryId:null;
+			var order=S.order.length?S.order.slice():S.entries.map(function(e){return e.entryId});
+			var taken={},place=[];
+			tracks.forEach(function(t){
+				var found=null;
+				for(var i=0;i<order.length;i++){
+					var id=order[i];
+					if(id===curId||taken[id])continue;
+					var e=entryBy(id);
+					if(e&&e.track.sourceID===t.sourceID){found=e;break}
+				}
+				if(found){
+					taken[found.entryId]=1;
+					order=order.filter(function(id){return id!==found.entryId});
+					found.queued=!atEnd;
+					place.push(found.entryId);
+					return;
+				}
+				if(cur&&cur.track.sourceID===t.sourceID&&!atEnd)return;
+				var item={entryId:S.seq++,track:plain(t),queued:!atEnd};
+				S.entries.push(item);
+				place.push(item.entryId);
+			});
+			if(!place.length)return 'same';
+			if(atEnd)order=order.concat(place);
+			else{
+				var pos=curId?Math.max(0,order.indexOf(curId)+1):0;
+				while(pos<order.length){
+					var ex=entryBy(order[pos]);
+					if(!ex||!ex.queued)break;
+					pos++;
+				}
+				place.forEach(function(id){var e=entryBy(id);if(e)e.queued=true});
+				Array.prototype.splice.apply(order,[pos,0].concat(place));
+			}
+			S.order=order;
 			S.dirty=true;emit('queue');save();
+			return atEnd?'end':'next';
 		};
 		E.remove=function(entryId){
 			var cur=E.current();if(cur&&cur.entryId===entryId)return;

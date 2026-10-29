@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS `plugin_music_track` (
   `duration` int(11) unsigned NOT NULL DEFAULT 0,
   `hasCover` tinyint(3) unsigned NOT NULL DEFAULT 0,
   `lyricOffset` int(11) NOT NULL DEFAULT 0,
+  `excluded` tinyint NOT NULL DEFAULT 0,
   `favorite` tinyint(3) unsigned NOT NULL DEFAULT 0,
   `sourceModifyTime` int(11) unsigned NOT NULL DEFAULT 0,
   `createTime` int(11) unsigned NOT NULL,

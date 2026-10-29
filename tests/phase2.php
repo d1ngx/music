@@ -75,8 +75,8 @@ check('a cover requested by someone is cached for that person', $call('coverUser
 check('a scan with no viewer caches the cover for the file owner', $call('coverUser', array('targetID' => 4), 0) === 4);
 
 $stale = $call('missingTrackColumns', array('id', 'title', 'artist', 'album'));
-check('a field cache from before favorite still needs those columns', $stale === array('lyricOffset', 'favorite'));
-check('a current schema does not ask to add favorite again', $call('missingTrackColumns', array('id', 'lyricOffset', 'favorite')) === array());
+check('a field cache from before favorite still needs those columns', $stale === array('lyricOffset', 'excluded', 'favorite'));
+check('a current schema does not ask to add favorite again', $call('missingTrackColumns', array('id', 'lyricOffset', 'excluded', 'favorite')) === array());
 $kept = $call('keepTrackUserFlags', array('title' => 'A'), array('favorite' => 1, 'lyricOffset' => 200));
 check('a later scan keeps favorite and lyric offset already stored', $kept['favorite'] === 1 && $kept['lyricOffset'] === 200);
 $staleRow = $call('keepTrackUserFlags', array('title' => 'A'), array('id' => 1, 'title' => 'A'));
@@ -85,6 +85,18 @@ check('a new file does not inherit favorite flags', $call('keepTrackUserFlags', 
 
 $row = $call('rowKeys', array('sourceid' => 9, 'targetid' => 7, 'userid' => 7, 'filetype' => 'mp3', 'modifytime' => 12));
 check('driver column names map back to the indexer', $row['sourceID'] === 9 && $row['targetID'] === 7 && $row['userID'] === 7 && $row['fileType'] === 'mp3' && $row['modifyTime'] === 12);
+
+$plugin->config = array('fileExt' => 'FLAC', 'scanVideo' => 0);
+check('configured extensions replace defaults', $call('scanExtensions') === array('flac'));
+$sql = $call('scanBatchSql', 7, $call('scanExtensions'), 80);
+$cleanup = $call('missingTracksSql', 7);
+check('removed audio formats are neither scanned nor retained', strpos($sql, "'mp3'") === false && strpos($cleanup, "'mp3'") === false);
+$plugin->config = array('fileExt' => '', 'scanVideo' => 0);
+check('explicit empty config scans no audio', $call('scanExtensions') === array());
+$plugin->config = array('scanVideo' => 0);
+check('absent config uses defaults', in_array('mp3', $call('scanExtensions'), true));
+$plugin->config = array('fileExt' => 'flac', 'scanVideo' => 1);
+check('video switch still adds video formats', in_array('mp4', $call('scanExtensions'), true));
 
 echo $failed ? "\n$failed failed\n" : "\nall passed\n";
 exit($failed ? 1 : 0);

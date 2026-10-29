@@ -42,11 +42,13 @@ class musicPlugin extends PluginBase {
 
 	public function initTable() {
 		$tables = Model()->db()->getTables();
-		if (!in_array($this->tableName, $tables, true) || !in_array('plugin_music_list', $tables, true)) {
+		if (array_diff(array($this->tableName, 'plugin_music_list', 'plugin_music_list_item'), $tables)) {
 			$file = stristr($GLOBALS['config']['database']['DB_TYPE'], 'sqlite') ? 'sqlite.sql' : 'mysql.sql';
 			foreach (sqlSplit(file_get_contents($this->pluginPath.'lib/data/'.$file)) as $sql) {
 				if (trim($sql)) {
-					try { Model()->db()->execute($sql); } catch (Throwable $e) {}
+					try {
+						if (Model()->db()->execute($sql) === false) error_log('music: schema creation failed');
+					} catch (Throwable $e) { error_log('music: schema creation failed: '.$e->getMessage()); }
 				}
 			}
 		}
@@ -67,6 +69,7 @@ class musicPlugin extends PluginBase {
 	private function extraTrackColumns() {
 		return array(
 			'lyricOffset' => array('sqlite' => 'integer NOT NULL DEFAULT 0', 'mysql' => 'int NOT NULL DEFAULT 0'),
+			'excluded' => array('sqlite' => 'integer NOT NULL DEFAULT 0', 'mysql' => 'tinyint NOT NULL DEFAULT 0'),
 			'favorite' => array('sqlite' => 'integer NOT NULL DEFAULT 0', 'mysql' => 'tinyint NOT NULL DEFAULT 0'),
 		);
 	}
@@ -90,7 +93,9 @@ class musicPlugin extends PluginBase {
 			$sql = $sqlite
 				? 'ALTER TABLE "'.$this->tableName.'" ADD COLUMN "'.$col.'" '.$type
 				: 'ALTER TABLE `'.$this->tableName.'` ADD COLUMN `'.$col.'` '.$type;
-			try { Model()->db()->execute($sql); } catch (Throwable $e) {}
+			try {
+				if (Model()->db()->execute($sql) === false) error_log('music: column migration failed: '.$col);
+			} catch (Throwable $e) { error_log('music: column migration failed: '.$col.': '.$e->getMessage()); }
 		}
 		try { $model->flush(); } catch (Throwable $e) {}
 	}
@@ -118,7 +123,7 @@ class musicPlugin extends PluginBase {
 		if (!KodUser::id()) return show_json(LNG('explorer.noPermissionAction'), false);
 		$this->initTable();
 		$q = trim((string)_get($this->in, 'q', ''));
-		$rows = Model($this->tableName)->where(array('userID' => KodUser::id()))->order('artist asc,album asc,trackNo asc,title asc')->select();
+		$rows = Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0))->order('artist asc,album asc,trackNo asc,title asc')->select();
 		$albums = array();
 		foreach ((array)$rows as $row) {
 			$title = $row['title'] !== '' ? $row['title'] : $row['name'];
@@ -147,18 +152,21 @@ class musicPlugin extends PluginBase {
 	}
 
 	public function cover() {
+		$this->initTable();
 		$sourceID = intval(Input::get('sourceid', 'require'));
 		$source = $this->assertTrack($sourceID);
 		$file = $this->coverFile($sourceID);
+		$version = $this->mediaVersion($source, 'cover');
+		header('Cache-Control: private, no-cache');
 		$offline = $this->offlineCover($sourceID);
 		if ($offline) return IO::fileOut($offline);
-		if (!is_file($file) || filesize($file) < 32) $this->collectCover($source, KodUser::id());
+		if (!is_file($file) || filesize($file) < 32 || @file_get_contents($file.'.version') !== $version) $this->collectCover($source, KodUser::id());
 		if (is_file($file) && filesize($file) >= 32) return IO::fileOut($file);
-		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
+		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->find();
 		$artist = $track ? $track['artist'] : '';
 		$album = $track ? $track['album'] : $source['name'];
 		header('Content-Type: image/svg+xml; charset=utf-8');
-		header('Cache-Control: private, max-age=86400');
+		header('Cache-Control: private, no-cache');
 		echo $this->patternCover($artist, $album !== '' ? $album : $source['name']);
 	}
 
@@ -167,7 +175,7 @@ class musicPlugin extends PluginBase {
 		$sourceID = intval(_get($this->in, 'sourceid', _get($this->in, 'sourceID', 0)));
 		if (!$sourceID) $sourceID = intval(Input::get('sourceid', 'require'));
 		$source = $this->assertTrack($sourceID);
-		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
+		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->find();
 		$offset = intval($track ? _get($track, 'lyricOffset', 0) : 0);
 		$saved = $this->offlineLyrics($sourceID);
 		$cache = $this->lyricsFile($sourceID);
@@ -176,14 +184,19 @@ class musicPlugin extends PluginBase {
 			$cached = json_decode(@file_get_contents($cache), true);
 			if (!is_array($cached) || ($cached['text'] === '' && empty($cached['synced']))) $cached = null;
 		}
+		$version = $this->mediaVersion($source, 'lyrics');
+		$archiveExists = $saved;
+		if (!$this->lyricsMatchVersion($saved, $version, $source['modifyTime'])) $saved = null;
+		if (!$this->lyricsMatchVersion($cached, $version, $source['modifyTime'])) $cached = null;
 		$data = $this->chooseLyrics($saved, $cached, $this->trackDuration($track));
 		if (!$data) {
 			$data = $this->findLyrics($source, $track);
+			$data['mediaVersion'] = $version;
 			if (($data['text'] !== '' || $data['synced'])) {
 				$dir = $this->lyricsDir();
 				if (!is_dir($dir)) @mkdir($dir, 0755, true);
 				@file_put_contents($cache, json_encode($data, JSON_UNESCAPED_UNICODE));
-				$this->archiveLyrics($sourceID, $data);
+				if (!$archiveExists || _get($archiveExists, 'origin', '') === 'auto') $this->archiveLyrics($sourceID, $data);
 			} elseif ($cached) $data = $cached;
 			elseif ($saved) $data = $saved;
 		}
@@ -199,8 +212,14 @@ class musicPlugin extends PluginBase {
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
 		$this->assertTrack($sourceID);
 		$offset = max(-15000, min(15000, intval(_get($this->in, 'offset', 0))));
-		Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->save(array('lyricOffset' => $offset, 'modifyTime' => time()));
+		Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->save(array('lyricOffset' => $offset, 'modifyTime' => time()));
 		$this->writeOffset($sourceID, $offset);
+		$cache = $this->lyricsFile($sourceID);
+		$data = is_file($cache) ? json_decode(@file_get_contents($cache), true) : null;
+		if (is_array($data)) {
+			$data['offset'] = $offset; $data['lyricOffset'] = $offset;
+			@file_put_contents($cache, json_encode($data, JSON_UNESCAPED_UNICODE), LOCK_EX);
+		}
 		return show_json(array('lyricOffset' => $offset));
 	}
 
@@ -208,17 +227,20 @@ class musicPlugin extends PluginBase {
 		if (!$this->postAllowed()) return show_json(LNG('common.illegalRequest'), false);
 		$this->initTable();
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
-		$this->assertTrack($sourceID);
+		$source = $this->assertTrack($sourceID);
 		$text = $this->lyricText(_get($this->in, 'text', ''));
 		if ($text === '' || strlen($text) > 500000) return show_json('歌词文件无法读取', false);
 		$data = $this->detectAndParse($text);
 		if ($data['text'] === '' && !$data['synced']) return show_json('没有识别出歌词。支持 LRC、逐词 LRC、SRT、WebVTT、ASS/SSA、TTML、网易云 YRC、JSON', false);
+		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
+		$data['lyricOffset'] = isset($data['offset']) ? intval($data['offset']) : intval(_get($track, 'lyricOffset', 0));
+		$data['origin'] = 'import';
+		$data['mediaVersion'] = $this->mediaVersion($source, 'lyrics');
+		if ($track) Model($this->tableName)->where(array('id' => $track['id'], 'userID' => KodUser::id()))->save(array('lyricOffset' => $data['lyricOffset']));
 		$dir = $this->lyricsDir();
 		if (!is_dir($dir)) @mkdir($dir, 0755, true);
 		@file_put_contents($this->lyricsFile($sourceID), json_encode($data, JSON_UNESCAPED_UNICODE));
 		$this->archiveLyrics($sourceID, $data);
-		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
-		$data['lyricOffset'] = intval($track ? _get($track, 'lyricOffset', 0) : 0);
 		$data['wordSources'] = $this->wordSourcesOn();
 		return show_json($data);
 	}
@@ -230,10 +252,11 @@ class musicPlugin extends PluginBase {
 		$this->initTable();
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
 		$source = $this->assertTrack($sourceID);
-		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
+		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->find();
 		$data = $this->findLyrics($source, $track);
 		if ($data['text'] === '' && !$data['synced']) return show_json('没有找到新的歌词，已保留原来的歌词', false);
 		$data['fetchedAt'] = time();
+		$data['mediaVersion'] = $this->mediaVersion($source, 'lyrics');
 		$dir = $this->lyricsDir();
 		if (!is_dir($dir)) @mkdir($dir, 0755, true);
 		@file_put_contents($this->lyricsFile($sourceID), json_encode($data, JSON_UNESCAPED_UNICODE));
@@ -242,7 +265,7 @@ class musicPlugin extends PluginBase {
 		return show_json($data);
 	}
 
-	// Drops index rows and playlist membership only. Source files and 音乐资料 are kept.
+	// Hide tracks from the library and future scans; preserve source files and 音乐资料.
 	public function libraryRemove() {
 		if (!$this->postAllowed()) return show_json(LNG('common.illegalRequest'), false);
 		$this->initTable();
@@ -250,13 +273,15 @@ class musicPlugin extends PluginBase {
 		$ids = array_values(array_unique(array_filter(array_map('intval', explode(',', (string)_get($this->in, 'sourceids', ''))))));
 		if (!$videos && !$ids) return show_json('没有选择歌曲', false);
 		if (count($ids) > 500) return show_json('一次最多移除 500 首', false);
-		$rows = Model($this->tableName)->where(array('userID' => KodUser::id()))->field('id,sourceID,ext')->select();
+		$rows = Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0))->field('id,sourceID,ext')->select();
 		$drop = $this->removalSet((array)$rows, $ids, $videos);
 		if (!$drop) return show_json($videos ? '资料库里没有视频' : '这些歌曲不在资料库中', false);
 		foreach ($drop as $sourceID) {
-			Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->delete();
+			Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->save(array('excluded' => 1, 'modifyTime' => time()));
 			Model('plugin_music_list_item')->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->delete();
 			@unlink($this->coverFile($sourceID));
+			@unlink($this->coverFile($sourceID).'.missing');
+			@unlink($this->coverFile($sourceID).'.version');
 			@unlink($this->lyricsFile($sourceID));
 		}
 		return show_json(array('sourceIDs' => $drop, 'filesKept' => 1));
@@ -283,7 +308,7 @@ class musicPlugin extends PluginBase {
 		$items = Model('plugin_music_list_item')->where(array('listID' => $id, 'userID' => KodUser::id()))->order('sort asc,id asc')->select();
 		$tracks = array();
 		foreach ((array)$items as $item) {
-			$row = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => intval($item['sourceID'])))->find();
+			$row = Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => intval($item['sourceID'])))->find();
 			if (!$row) continue;
 			$title = $row['title'] !== '' ? $row['title'] : $row['name'];
 			$artist = $row['artist'] !== '' ? $row['artist'] : LNG('music.lib.unknownArtist');
@@ -405,11 +430,12 @@ class musicPlugin extends PluginBase {
 		$limit = max(1, min(200, intval($limit)));
 		$now = $now === null ? time() : intval($now);
 		$retryBefore = $now - 86400;
-		return 'SELECT s.sourceID AS sourceID, s.targetID AS targetID, s.fileID AS fileID, s.name AS name, s.fileType AS fileType, s.size AS size, s.modifyTime AS modifyTime'
+		return 'SELECT s.sourceID AS sourceID, s.parentID AS parentID, s.targetID AS targetID, s.fileID AS fileID, s.name AS name, s.fileType AS fileType, s.size AS size, s.modifyTime AS modifyTime'
 			.' FROM io_source s'
 			.' LEFT JOIN plugin_music_track t ON t.userID=s.targetID AND t.sourceID=s.sourceID'
 			.' WHERE s.targetType=1 AND s.isFolder=0 AND s.isDelete=0'.$owner
 			.' AND s.fileType IN ('.$ext.')'
+			.' AND (t.id IS NULL OR t.excluded=0)'
 			.' AND (t.id IS NULL OR t.sourceModifyTime<>s.modifyTime OR (t.duration=0 AND t.modifyTime<'.$retryBefore.'))'
 			.' ORDER BY (t.id IS NULL) DESC, s.modifyTime DESC LIMIT '.$limit;
 	}
@@ -431,7 +457,7 @@ class musicPlugin extends PluginBase {
 		if (!is_array($row)) return array();
 		$out = array();
 		foreach ($row as $key => $value) if (is_string($key)) $out[$key] = $value;
-		foreach (array('sourceID' => 'sourceid', 'targetID' => 'targetid', 'userID' => 'userid', 'fileID' => 'fileid', 'fileType' => 'filetype', 'modifyTime' => 'modifytime') as $name => $lower) {
+		foreach (array('sourceID' => 'sourceid', 'parentID' => 'parentid', 'targetID' => 'targetid', 'userID' => 'userid', 'fileID' => 'fileid', 'fileType' => 'filetype', 'modifyTime' => 'modifytime') as $name => $lower) {
 			if (!isset($out[$name]) && isset($out[$lower])) $out[$name] = $out[$lower];
 		}
 		return $out;
@@ -444,10 +470,10 @@ class musicPlugin extends PluginBase {
 
 	private function scanExtensions($raw = null) {
 		$config = $this->getConfig();
-		if ($raw === null) $raw = _get($config, 'fileExt', '');
+		if ($raw === null) $raw = _get($config, 'fileExt', implode(',', $this->audioExt));
 		if (is_array($raw)) $raw = implode(',', $raw);
 		$fromConfig = array_filter(array_map('strtolower', preg_split('/[\s,;]+/', (string)$raw)));
-		$list = array_merge($this->audioExt, $fromConfig);
+		$list = $fromConfig;
 		if ($this->scanVideoOn($config)) $list = array_merge($list, $this->videoExt);
 		$out = array();
 		foreach ($list as $ext) {
@@ -463,6 +489,15 @@ class musicPlugin extends PluginBase {
 	// A failed read of an existing row must not wipe tags. Stamp the attempt and try a zero-duration row again after a day.
 	private function indexKeepsMetadata($read, $existing) {
 		return !$read && !empty($existing);
+	}
+
+	private function metadataReadable($more) {
+		if (!is_array($more)) return false;
+		if (floatval(_get($more, 'playtime', 0)) > 0) return true;
+		foreach ((array)_get($more, 'tags', array()) as $value) {
+			if (is_scalar($value) && trim((string)$value) !== '') return true;
+		}
+		return false;
 	}
 
 	private function indexSource($source, $existing) {
@@ -483,7 +518,7 @@ class musicPlugin extends PluginBase {
 				$meta['year'] = $this->clip(_get($tags, 'year', ''), 16);
 				$meta['trackNo'] = intval(_get($tags, 'track', 0));
 			}
-			$read = true;
+			$read = $this->metadataReadable($more);
 		} catch (Throwable $e) {}
 		if ($this->indexKeepsMetadata($read, $existing)) {
 			$model = Model($this->tableName); $model->setDataAuto(false);
@@ -522,21 +557,54 @@ class musicPlugin extends PluginBase {
 		return $uid > 0 ? $uid : intval(_get($source, 'targetID', 0));
 	}
 
+	private function mediaVersion($source, $kind) {
+		$exts = $kind === 'cover' ? array('jpg','jpeg','png','webp','bmp') : array('lrc','txt','srt','vtt','ass','ssa','ttml','xml','json','yrc','lrcx');
+		$rows = array();
+		if (!empty($source['parentID'])) $rows = Model('Source')->where(array('parentID' => intval($source['parentID']), 'isDelete' => 0, 'isFolder' => 0, 'fileType' => array('in', $exts)))->field('sourceID,fileID,name,size,modifyTime')->order('sourceID asc')->select();
+		$identity = array();
+		foreach (array('sourceID','fileID','name','size','modifyTime','parentID') as $key) $identity[$key] = (string)_get($source, $key, '');
+		return hash('sha256', json_encode(array($identity, (array)$rows)));
+	}
+
+	private function lyricsMatchVersion($data, $version, $sourceTime) {
+		if (!is_array($data)) return false;
+		if (_get($data, 'origin', '') === 'import') return true;
+		if (isset($data['mediaVersion'])) return $data['mediaVersion'] === $version;
+		// Legacy archives are retained only when no newer source revision is known.
+		return isset($data['fileTime']) && intval($data['fileTime']) >= intval($sourceTime);
+	}
+
 	private function collectCover($source, $userID = null) {
 		$dir = $this->coverDir();
 		if (!is_dir($dir)) @mkdir($dir, 0755, true);
 		$target = $this->coverFile(intval($source['sourceID']), $this->coverUser($source, $userID));
+		$version = $this->mediaVersion($source, 'cover');
+		$missFile = $target.'.missing';
+		$miss = is_file($missFile) ? json_decode(@file_get_contents($missFile), true) : null;
+		if (_get($miss, 'mediaVersion', '') === $version && $this->coverMissValid($miss, $source, time())) return false;
 		$picture = $this->isVideo($source['fileType']) ? '' : $this->embeddedPicture($source);
 		if ($picture) {
+			@unlink($missFile);
 			@file_put_contents($target, $picture);
+			@file_put_contents($target.'.version', $version, LOCK_EX);
 			return true;
 		}
 		$folder = $this->folderCover($source);
 		if ($folder) {
+			@unlink($missFile);
 			@file_put_contents($target, $folder);
+			@file_put_contents($target.'.version', $version, LOCK_EX);
 			return true;
 		}
+		@unlink($target);
+		@file_put_contents($missFile, json_encode(array('mediaVersion' => $version, 'modifyTime' => intval(_get($source, 'modifyTime', 0)), 'checkedAt' => time())), LOCK_EX);
 		return false;
+	}
+
+	private function coverMissValid($miss, $source, $now) {
+		return is_array($miss) && isset($miss['modifyTime'], $miss['checkedAt'])
+			&& intval($miss['modifyTime']) === intval(_get($source, 'modifyTime', 0))
+			&& $now >= intval($miss['checkedAt']) && $now - intval($miss['checkedAt']) < 3600;
 	}
 
 	private function embeddedPicture($source) {
@@ -620,9 +688,10 @@ class musicPlugin extends PluginBase {
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
 		$source = $this->assertTrack($sourceID);
 		if (!$this->wordSourcesOn()) return show_json('插件设置里没有开启逐字歌词来源', false);
-		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
+		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->find();
 		$data = $this->onlineLyrics($track, $source, true);
 		if (!$data) return show_json('没有找到这首歌的逐字歌词', false);
+		$data['mediaVersion'] = $this->mediaVersion($source, 'lyrics');
 		$dir = $this->lyricsDir();
 		if (!is_dir($dir)) @mkdir($dir, 0755, true);
 		@file_put_contents($this->lyricsFile($sourceID), json_encode($data, JSON_UNESCAPED_UNICODE));
@@ -818,6 +887,14 @@ class musicPlugin extends PluginBase {
 		return $best;
 	}
 
+	private function sidecarRank($base, $stem, $title) {
+		if ($base === $stem) return 0;
+		if ($base === $stem.'.cn' || $base === $stem.'.zh') return 1;
+		if ($title !== '' && $base === $title) return 2;
+		if ($base !== '' && $title !== '' && (strpos($stem, $base) !== false || strpos($base, $title) !== false)) return 3;
+		return -1;
+	}
+
 	private function sidecarLyrics($source, $track = null) {
 		$parentID = intval(_get($source, 'parentID', 0));
 		if (!$parentID) return '';
@@ -829,10 +906,17 @@ class musicPlugin extends PluginBase {
 			'parentID' => $parentID, 'targetType' => 1, 'targetID' => intval($source['targetID']),
 			'isFolder' => 0, 'isDelete' => 0, 'fileType' => array('in', array('lrc','txt','srt','vtt','ass','ssa','ttml','xml','json','yrc','lrcx')),
 		))->select();
+		$ranked = array();
 		foreach ((array)$rows as $row) {
 			$base = strtolower(preg_replace('/\.[^.]+$/', '', $row['name']));
-			$hit = $base === $stem || $base === $stem.'.cn' || $base === $stem.'.zh' || ($title !== '' && ($base === $title || strpos($stem, $base) !== false || strpos($base, $title) !== false));
-			if (!$hit) continue;
+			$row['_rank'] = $this->sidecarRank($base, $stem, $title);
+			if ($row['_rank'] >= 0) $ranked[] = $row;
+		}
+		usort($ranked, function($a, $b) {
+			$rank = $a['_rank'] - $b['_rank'];
+			return $rank ? $rank : strcmp($a['name'], $b['name']);
+		});
+		foreach ($ranked as $row) {
 			try {
 				$text = IO::getContent(KodIO::make(intval($row['sourceID'])));
 				if (is_string($text) && trim($text) !== '') return $text;
@@ -1265,12 +1349,16 @@ class musicPlugin extends PluginBase {
 	}
 
 	private function parseLyrics($text, $source) {
+		$extra = array();
+		if (preg_match('/\[offset:\s*([+-]?\d+)\s*\]/i', $text, $m)) $extra['offset'] = max(-15000, min(15000, intval($m[1])));
+		if (preg_match('/\[music-version:([a-f0-9]{64})\]/', $text, $m)) $extra['mediaVersion'] = $m[1];
+		if (preg_match('/\[music-origin:(auto|import)\]/', $text, $m)) $extra['origin'] = $m[1];
 		$lines = preg_split("/\r\n|\n|\r/", (string)$text);
 		$synced = array();
 		$plain = array();
 		foreach ($lines as $line) {
 			$line = trim($line);
-			if ($line === '') continue;
+			if ($line === '' || preg_match('/^\[(?:offset|music-version|music-origin|ar|ti|al|by|re|ve|length):/i', $line)) continue;
 			if (preg_match_all('/\[(\d{1,2}):(\d{2}(?:\.\d+)?)\]/', $line, $matches, PREG_SET_ORDER)) {
 				$body = trim(preg_replace('/\[\d{1,2}:\d{2}(?:\.\d+)?\]/', '', $line));
 				if ($body === '') continue;
@@ -1281,11 +1369,11 @@ class musicPlugin extends PluginBase {
 			} else $plain[] = $line;
 		}
 		usort($synced, function($a, $b) {return $a['t'] == $b['t'] ? 0 : ($a['t'] < $b['t'] ? -1 : 1);});
-		return array(
+		return array_merge($extra, array(
 			'text' => $plain ? implode("\n", $plain) : implode("\n", array_map(function($row) {return $row['line'];}, $synced)),
 			'synced' => $synced,
 			'source' => $source,
-		);
+		));
 	}
 
 	private function analyzeRaw($source) {
@@ -1337,6 +1425,8 @@ class musicPlugin extends PluginBase {
 			Model($this->tableName)->where(array('id' => $id, 'userID' => $uid))->delete();
 			Model('plugin_music_list_item')->where(array('userID' => $uid, 'sourceID' => $sid))->delete();
 			@unlink($this->coverFile($sid, $uid));
+			@unlink($this->coverFile($sid, $uid).'.missing');
+			@unlink($this->coverFile($sid, $uid).'.version');
 			@unlink($this->lyricsFile($sid, $uid));
 			$removed++;
 		}
@@ -1347,7 +1437,7 @@ class musicPlugin extends PluginBase {
 		$owner = $userID !== null ? ' AND t.userID='.intval($userID) : '';
 		// Keep the extensions this scan would index, and every video type even when video scanning is off.
 		$media = $this->sqlExtList(array_merge($this->scanExtensions(), $this->videoExt));
-		$gone = $media === '' ? 's.sourceID IS NULL' : '(s.sourceID IS NULL OR s.fileType NOT IN ('.$media.'))';
+		$gone = $media === '' ? 's.sourceID IS NULL' : '(s.sourceID IS NULL OR (t.excluded=0 AND s.fileType NOT IN ('.$media.')))';
 		return 'SELECT t.id AS id, t.userID AS userID, t.sourceID AS sourceID'
 			.' FROM plugin_music_track t'
 			.' LEFT JOIN io_source s ON s.sourceID=t.sourceID AND s.targetID=t.userID AND s.targetType=1 AND s.isDelete=0 AND s.isFolder=0'
@@ -1380,7 +1470,7 @@ class musicPlugin extends PluginBase {
 		$sourceID = intval(_get($info, 'sourceID', 0));
 		if (!$sourceID) return show_json('当前存储不能直接播放', false);
 		$this->assertTrack($sourceID);
-		$row = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
+		$row = Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->find();
 		if ($row) {
 			$title = $row['title'] !== '' ? $row['title'] : $row['name'];
 			$artist = $row['artist'] !== '' ? $row['artist'] : LNG('music.lib.unknownArtist');
@@ -1403,7 +1493,7 @@ class musicPlugin extends PluginBase {
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
 		$this->assertTrack($sourceID);
 		$favorite = _get($this->in, 'favorite', 0) == 1 ? 1 : 0;
-		Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->save(array('favorite' => $favorite, 'modifyTime' => time()));
+		Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->save(array('favorite' => $favorite, 'modifyTime' => time()));
 		return show_json(array('sourceID' => $sourceID, 'favorite' => $favorite));
 	}
 
@@ -1539,8 +1629,12 @@ class musicPlugin extends PluginBase {
 	}
 
 	private function toLrc($data) {
-		$offset = intval(_get($data, 'lyricOffset', 0));
+		$offset = intval(_get($data, 'lyricOffset', _get($data, 'offset', 0)));
 		$lines = array('[offset:'.($offset >= 0 ? '+' : '').$offset.']');
+		if (isset($data['mediaVersion'])) {
+			$lines[] = '[music-version:'.$data['mediaVersion'].']';
+			$lines[] = '[music-origin:' . (_get($data, 'origin', '') === 'import' ? 'import' : 'auto') . ']';
+		}
 		foreach ((array)$data['synced'] as $row) {
 			$sec = floatval($row['t']);
 			$m = floor($sec / 60); $s = $sec - $m * 60;
@@ -1557,7 +1651,7 @@ class musicPlugin extends PluginBase {
 			}
 			$lines[] = sprintf('[%02d:%05.2f]%s', $m, $s, $body);
 		}
-		if (count($lines) === 1 && $data['text'] !== '') $lines[] = $data['text'];
+		if (empty($data['synced']) && $data['text'] !== '') $lines[] = $data['text'];
 		return implode("\n", $lines)."\n";
 	}
 

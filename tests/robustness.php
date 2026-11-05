@@ -14,6 +14,15 @@ class TestModel {
     public function execute($sql) { return $this->pdo->exec($sql); }
     public function getDbFields() { return array_column($this->pdo->query('PRAGMA table_info(plugin_music_track)')->fetchAll(PDO::FETCH_ASSOC), 'name'); }
     public function flush() {}
+    public function setDataAuto($value) {}
+    private $conditions;
+    public function where($conditions) { $this->conditions = $conditions; return $this; }
+    public function save($data) {
+        $fields = array_map(function($key){return '"'.$key.'"=?';}, array_keys($data));
+        $where = array_map(function($key){return '"'.$key.'"=?';}, array_keys($this->conditions));
+        $q = $this->pdo->prepare('UPDATE plugin_music_track SET '.implode(',', $fields).' WHERE '.implode(' AND ', $where));
+        return $q->execute(array_merge(array_values($data), array_values($this->conditions)));
+    }
 }
 function Model($name = null) { global $model; return $model; }
 require dirname(__DIR__).'/app.php';
@@ -48,4 +57,40 @@ $miss = array('modifyTime'=>20, 'checkedAt'=>100);
 check('recent cover miss is cached', callPrivate('coverMissValid', $miss, array('modifyTime'=>20), 200));
 check('source change invalidates cover miss', !callPrivate('coverMissValid', $miss, array('modifyTime'=>21), 200));
 check('cover miss expires', !callPrivate('coverMissValid', $miss, array('modifyTime'=>20), 3700));
+// A replacement preserving mtime must still refresh metadata.
+$model->execute("UPDATE io_source SET isDelete=0,fileType='mp3',fileID=1,size=100,modifyTime=200");
+$model->execute("UPDATE plugin_music_track SET excluded=0,duration=200,sourceModifyTime=200,fileID=1,size=100");
+foreach (array(7, null) as $owner) {
+    $sql = callPrivate('scanBatchSql', $owner, array('mp3'), 80, 2000000);
+    check('unchanged source is skipped', !$model->pdo->query($sql)->fetchAll());
+    $model->execute('UPDATE io_source SET fileID=99');
+    check('file replacement with same mtime is scanned', count($model->pdo->query($sql)->fetchAll()) === 1);
+    $model->execute('UPDATE io_source SET fileID=1,size=999');
+    check('size change with same mtime is scanned', count($model->pdo->query($sql)->fetchAll()) === 1);
+    $model->execute('UPDATE io_source SET size=100');
+}
+$model->execute('ALTER TABLE plugin_music_track DROP COLUMN lyricOffsetSet');
+$p->initTable();
+check('existing schemas gain explicit-offset flag', in_array('lyricOffsetSet', $model->getDbFields()));
+$track = $model->pdo->query('SELECT * FROM plugin_music_track LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+check('upgraded unset offset uses file tag', callPrivate('effectiveLyricOffset', $track, array('offset'=>1500)) === 1500);
+$model->execute('UPDATE plugin_music_track SET lyricOffset=0,lyricOffsetSet=1');
+$track = $model->pdo->query('SELECT * FROM plugin_music_track LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+check('stored explicit zero overrides refreshed file tag', callPrivate('effectiveLyricOffset', $track, array('offset'=>1500)) === 0);
+$kept = callPrivate('keepTrackUserFlags', array('title'=>'rescanned'), $track);
+check('rescan preserves explicit zero flag', $kept['lyricOffsetSet'] === 1 && $kept['lyricOffset'] === 0);
+check('legacy nonzero offset stays effective', callPrivate('effectiveLyricOffset', array('lyricOffset'=>-500), array('offset'=>1500)) === -500);
+check('explicit nonzero stays effective', callPrivate('effectiveLyricOffset', array('lyricOffset'=>500,'lyricOffsetSet'=>1), array('offset'=>1500)) === 500);
+check('file offset is clamped', callPrivate('effectiveLyricOffset', array(), array('offset'=>90000)) === 15000);
+// Failed metadata reads stamp the new identity without wiping the old metadata.
+class GetInfo { public static function get($path) { throw new RuntimeException('unreadable tags'); } }
+class KodIO { public static function make($id) { return '{source:'.$id.'}'; } }
+$model->execute('UPDATE io_source SET fileID=999,size=1234');
+$source = $model->pdo->query('SELECT * FROM io_source LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+$existing = $model->pdo->query('SELECT * FROM plugin_music_track LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+callPrivate('indexSource', $source, $existing);
+$updated = $model->pdo->query('SELECT * FROM plugin_music_track LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+check('failed read keeps stored duration and flags', $updated['duration'] === $existing['duration'] && $updated['lyricOffsetSet'] === 1);
+check('failed read stamps replacement identity', intval($updated['fileID']) === 999 && intval($updated['size']) === 1234);
+check('failed read is not retried on every scan', !$model->pdo->query(callPrivate('scanBatchSql', 7, array('mp3'), 80, 2000000))->fetchAll());
 echo "all passed\n";

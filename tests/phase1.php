@@ -67,5 +67,15 @@ check('video removal ignores the selection and keeps audio', $videos === array(2
 $none = $call('removalSet', $rows, array(), false);
 check('an empty selection removes nothing', $none === array());
 
+$manual = array('text'=>'custom excerpt','synced'=>array($line(0,'a'),$line(10,'b')), 'origin'=>'import','fileTime'=>100);
+$selected = $call('chooseLyrics', $manual, null, 200);
+check('a partial manual archive is reused', $selected && $selected['text'] === 'custom excerpt');
+check('a partial manual cache is reused', $call('chooseLyrics', null, $manual, 200) === $manual);
+$automatic = $manual; unset($automatic['origin']);
+check('automatic excerpts remain filtered', $call('chooseLyrics', $automatic, null, 200) === null);
+$new = array('text'=>'explicit refresh','synced'=>array($line(190,'end')), 'fetchedAt'=>200);
+check('a newer explicit refresh can replace manual lyrics', $call('chooseLyrics', $manual, $new, 200) === $new);
+check('empty manual data is not reused', $call('chooseLyrics', array('origin'=>'import','text'=>'','synced'=>array()), null, 200) === null);
+
 echo $failed ? "\n$failed failed\n" : "\nall passed\n";
 exit($failed ? 1 : 0);

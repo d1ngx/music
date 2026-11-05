@@ -60,7 +60,7 @@ class musicPlugin extends PluginBase {
 	// Model->save drop those fields, so a heart looks saved until the page reloads.
 	private function keepTrackUserFlags($data, $existing) {
 		if (!$existing) return $data;
-		foreach (array('favorite', 'lyricOffset') as $keep) {
+		foreach (array('favorite', 'lyricOffset', 'lyricOffsetSet') as $keep) {
 			if (array_key_exists($keep, $existing)) $data[$keep] = intval($existing[$keep]);
 		}
 		return $data;
@@ -69,6 +69,7 @@ class musicPlugin extends PluginBase {
 	private function extraTrackColumns() {
 		return array(
 			'lyricOffset' => array('sqlite' => 'integer NOT NULL DEFAULT 0', 'mysql' => 'int NOT NULL DEFAULT 0'),
+			'lyricOffsetSet' => array('sqlite' => 'integer NOT NULL DEFAULT 0', 'mysql' => 'tinyint NOT NULL DEFAULT 0'),
 			'excluded' => array('sqlite' => 'integer NOT NULL DEFAULT 0', 'mysql' => 'tinyint NOT NULL DEFAULT 0'),
 			'favorite' => array('sqlite' => 'integer NOT NULL DEFAULT 0', 'mysql' => 'tinyint NOT NULL DEFAULT 0'),
 		);
@@ -176,7 +177,6 @@ class musicPlugin extends PluginBase {
 		if (!$sourceID) $sourceID = intval(Input::get('sourceid', 'require'));
 		$source = $this->assertTrack($sourceID);
 		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->find();
-		$offset = intval($track ? _get($track, 'lyricOffset', 0) : 0);
 		$saved = $this->offlineLyrics($sourceID);
 		$cache = $this->lyricsFile($sourceID);
 		$cached = null;
@@ -200,10 +200,16 @@ class musicPlugin extends PluginBase {
 			} elseif ($cached) $data = $cached;
 			elseif ($saved) $data = $saved;
 		}
-		if (!$offset && !empty($data['offset'])) $offset = intval($data['offset']);
-		$data['lyricOffset'] = $offset;
+		$data['lyricOffset'] = $this->effectiveLyricOffset($track, $data);
 		$data['wordSources'] = $this->wordSourcesOn();
 		return show_json($data);
+	}
+
+	private function effectiveLyricOffset($track, $data) {
+		$stored = intval(_get($track, 'lyricOffset', 0));
+		// Nonzero legacy values were already explicit settings before the flag existed.
+		if (_get($track, 'lyricOffsetSet', 0) || $stored !== 0) return $stored;
+		return max(-15000, min(15000, intval(_get($data, 'offset', 0))));
 	}
 
 	public function lyricOffset() {
@@ -212,7 +218,7 @@ class musicPlugin extends PluginBase {
 		$sourceID = intval(_get($this->in, 'sourceid', 0));
 		$this->assertTrack($sourceID);
 		$offset = max(-15000, min(15000, intval(_get($this->in, 'offset', 0))));
-		Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->save(array('lyricOffset' => $offset, 'modifyTime' => time()));
+		Model($this->tableName)->where(array('userID' => KodUser::id(), 'excluded' => 0, 'sourceID' => $sourceID))->save(array('lyricOffset' => $offset, 'lyricOffsetSet' => 1, 'modifyTime' => time()));
 		$this->writeOffset($sourceID, $offset);
 		$cache = $this->lyricsFile($sourceID);
 		$data = is_file($cache) ? json_decode(@file_get_contents($cache), true) : null;
@@ -233,10 +239,10 @@ class musicPlugin extends PluginBase {
 		$data = $this->detectAndParse($text);
 		if ($data['text'] === '' && !$data['synced']) return show_json('没有识别出歌词。支持 LRC、逐词 LRC、SRT、WebVTT、ASS/SSA、TTML、网易云 YRC、JSON', false);
 		$track = Model($this->tableName)->where(array('userID' => KodUser::id(), 'sourceID' => $sourceID))->find();
-		$data['lyricOffset'] = isset($data['offset']) ? intval($data['offset']) : intval(_get($track, 'lyricOffset', 0));
+		$data['lyricOffset'] = isset($data['offset']) ? intval($data['offset']) : $this->effectiveLyricOffset($track, $data);
 		$data['origin'] = 'import';
 		$data['mediaVersion'] = $this->mediaVersion($source, 'lyrics');
-		if ($track) Model($this->tableName)->where(array('id' => $track['id'], 'userID' => KodUser::id()))->save(array('lyricOffset' => $data['lyricOffset']));
+		if ($track) Model($this->tableName)->where(array('id' => $track['id'], 'userID' => KodUser::id()))->save(array('lyricOffset' => $data['lyricOffset'], 'lyricOffsetSet' => isset($data['offset']) ? 1 : intval(_get($track, 'lyricOffsetSet', 0))));
 		$dir = $this->lyricsDir();
 		if (!is_dir($dir)) @mkdir($dir, 0755, true);
 		@file_put_contents($this->lyricsFile($sourceID), json_encode($data, JSON_UNESCAPED_UNICODE));
@@ -260,7 +266,7 @@ class musicPlugin extends PluginBase {
 		$dir = $this->lyricsDir();
 		if (!is_dir($dir)) @mkdir($dir, 0755, true);
 		@file_put_contents($this->lyricsFile($sourceID), json_encode($data, JSON_UNESCAPED_UNICODE));
-		$data['lyricOffset'] = intval($track ? _get($track, 'lyricOffset', 0) : 0);
+		$data['lyricOffset'] = $this->effectiveLyricOffset($track, $data);
 		$data['wordSources'] = $this->wordSourcesOn();
 		return show_json($data);
 	}
@@ -436,7 +442,7 @@ class musicPlugin extends PluginBase {
 			.' WHERE s.targetType=1 AND s.isFolder=0 AND s.isDelete=0'.$owner
 			.' AND s.fileType IN ('.$ext.')'
 			.' AND (t.id IS NULL OR t.excluded=0)'
-			.' AND (t.id IS NULL OR t.sourceModifyTime<>s.modifyTime OR (t.duration=0 AND t.modifyTime<'.$retryBefore.'))'
+			.' AND (t.id IS NULL OR t.sourceModifyTime<>s.modifyTime OR t.fileID<>s.fileID OR t.size<>s.size OR (t.duration=0 AND t.modifyTime<'.$retryBefore.'))'
 			.' ORDER BY (t.id IS NULL) DESC, s.modifyTime DESC LIMIT '.$limit;
 	}
 
@@ -524,6 +530,8 @@ class musicPlugin extends PluginBase {
 			$model = Model($this->tableName); $model->setDataAuto(false);
 			$model->where(array('id' => intval($existing['id']), 'userID' => intval($existing['userID'])))->save(array(
 				'sourceModifyTime' => intval($source['modifyTime']),
+				'fileID' => intval($source['fileID']),
+				'size' => intval($source['size']),
 				'modifyTime' => time(),
 			));
 			return;
@@ -695,7 +703,7 @@ class musicPlugin extends PluginBase {
 		$dir = $this->lyricsDir();
 		if (!is_dir($dir)) @mkdir($dir, 0755, true);
 		@file_put_contents($this->lyricsFile($sourceID), json_encode($data, JSON_UNESCAPED_UNICODE));
-		$data['lyricOffset'] = intval($track ? _get($track, 'lyricOffset', 0) : 0);
+		$data['lyricOffset'] = $this->effectiveLyricOffset($track, $data);
 		$this->archiveLyrics($sourceID, $data);
 		$data['wordSources'] = 1;
 		return show_json($data);
@@ -722,7 +730,7 @@ class musicPlugin extends PluginBase {
 	// Clips that end in the first part of the song are ignored so lyrics() looks again.
 	private function chooseLyrics($saved, $cached, $duration) {
 		$usable = function($data) use ($duration) {
-			return is_array($data) && ((_get($data, 'text', '') !== '') || !empty($data['synced'])) && $this->lyricCovers($data, $duration);
+			return is_array($data) && ((_get($data, 'text', '') !== '') || !empty($data['synced'])) && (_get($data, 'origin', '') === 'import' || $this->lyricCovers($data, $duration));
 		};
 		$savedOk = $usable($saved);
 		$cachedOk = $usable($cached);

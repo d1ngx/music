@@ -75,8 +75,8 @@ check('a cover requested by someone is cached for that person', $call('coverUser
 check('a scan with no viewer caches the cover for the file owner', $call('coverUser', array('targetID' => 4), 0) === 4);
 
 $stale = $call('missingTrackColumns', array('id', 'title', 'artist', 'album'));
-check('a field cache from before favorite still needs those columns', $stale === array('lyricOffset', 'excluded', 'favorite'));
-check('a current schema does not ask to add favorite again', $call('missingTrackColumns', array('id', 'lyricOffset', 'excluded', 'favorite')) === array());
+check('a field cache from before favorite still needs those columns', $stale === array('lyricOffset', 'lyricOffsetSet', 'excluded', 'favorite'));
+check('a current schema does not ask to add favorite again', $call('missingTrackColumns', array('id', 'lyricOffset', 'lyricOffsetSet', 'excluded', 'favorite')) === array());
 $kept = $call('keepTrackUserFlags', array('title' => 'A'), array('favorite' => 1, 'lyricOffset' => 200));
 check('a later scan keeps favorite and lyric offset already stored', $kept['favorite'] === 1 && $kept['lyricOffset'] === 200);
 $staleRow = $call('keepTrackUserFlags', array('title' => 'A'), array('id' => 1, 'title' => 'A'));
